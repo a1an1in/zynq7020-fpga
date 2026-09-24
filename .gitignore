@@ -1,0 +1,45 @@
+# ===== Vivado 工程中间生成物（不提交）=====
+*.jou
+*.log
+*.wdb
+*.backup.*
+*.str
+*.dcp
+*.bit
+*.bin
+*.mcs
+*.prm
+*.svf
+*.ltx
+
+# Vivado 目录
+.Xil/
+.ip_user_files/
+.cache/
+.hw/
+.runs/
+.gen/
+.project/
+.settings/
+.sdk/
+os/
+
+# 仿真
+*.mem
+*.vcd
+*.fsdb
+
+# Vivado IP 备份
+*.vh.bak
+*.vhd.bak
+
+# 编辑器 / 系统
+.vscode/
+.idea/
+.DS_Store
+*.swp
+
+# 需要保留以便重建工程的东西则去掉注释（示例）
+#!*.xci
+#!*.bps
+#!*.tcl

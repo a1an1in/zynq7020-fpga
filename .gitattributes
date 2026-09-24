@@ -1,0 +1,20 @@
+# 统一源码行尾为 LF，避免 Windows(CRLF) 与 Linux(LF) 之间的提交差异
+*.tcl    text eol=lf
+*.py     text eol=lf
+*.v      text eol=lf
+*.vhd    text eol=lf
+*.vh     text eol=lf
+*.sv     text eol=lf
+*.xdc    text eol=lf
+*.xci    text eol=lf
+*.md     text eol=lf
+.gitignore text eol=lf
+
+# 二进制/大文件不进行尾处理 (通常配合 Git LFS)
+*.bit    binary
+*.bin    binary
+*.xsa    binary
+*.hdf    binary
+*.xpr    binary
+*.jou    binary
+*.log    binary
