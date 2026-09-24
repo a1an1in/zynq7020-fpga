@@ -81,28 +81,49 @@ vivado -version
 ## 用法（跨平台：Windows 与 Linux/WSL2 通用）
 
 > 前提：已安装对应平台的 Vivado（Windows 用 Windows 版；Linux/WSL2 用 Linux 版）。
-> 入口脚本会自动定位 vivado（依次查找 PATH、常见安装目录、环境变量 `VIVADO`），
-> 无需手动指定路径。
+> 统一入口脚本 `scripts/fpga.py` 会自动定位 vivado（依次查找 PATH、常见安装目录、环境变量 `VIVADO`），
+> 无需手动指定路径。若你的环境命令是 `python3`，请把下面的 `python` 换成 `python3`。
+
+### 子命令一览
+
+| 子命令 | 作用 | 必备参数 | 示例 | 产物 / 说明 |
+|--------|------|----------|------|-------------|
+| `build` | **编译**：建工程 → 综合 → 实现 → 生成 bit → 导出 XSA | `--top <工程名>` | `python scripts/fpga.py build --top run_led` | `build/<工程名>_prj/<工程名>.xpr`、`build/<工程名>_prj/<工程名>.runs/impl_1/<工程名>.bit`；**含 PS/BD 才导出** `build/<工程名>.xsa`，纯 PL 会提示跳过 |
+| `sim` | **命令行仿真**（需先 build，并在 `projects/<工程>/tb/` 放好 testbench） | `--top <工程名>` | `python scripts/fpga.py sim --top run_led` | 终端打印仿真结果，批处理结束自动退出 |
+| `program` | **烧板**：把 bit 写入 FPGA（需先 build，且 JTAG/开发板已连接） | `--top <工程名>` | `python scripts/fpga.py program --top run_led` | 烧写 `build/<工程名>_prj/.../impl_1/<工程名>.bit` |
+| `clean` | **清理** `build/` 全部编译产物 | 无 | `python scripts/fpga.py clean` | 删除 `build/`；无此目录则提示无需清理 |
+
+> - **不设 `--top`** 时，默认使用 `projects/proj1_template`（示例工程）。
+> - `build` 前置条件：`projects/<工程名>/` 存在，源码在 `src/`、约束在 `constraints/`、
+>   IP 在 `ip/`（可选：`bd/`、`top.txt`）。新建工程见上文「新增一个 Vivado 工程」。
+> - 内部实际调用：`vivado -mode batch -nolog -nojournal -source scripts/create_project.tcl -tclargs [--top <工程名>]`
+>   （`sim`/`program` 对应对应的 `.tcl`）。
+
+### 常用组合示例
 
 ```bash
-# —— 两个平台命令完全一致 ——
+# 首次需要：建工程+编译+出 bit
+python scripts/fpga.py build --top run_led
 
-# ① 编译：建工程 -> 综合 -> 实现 -> 生成 bit 流 -> 导出 XSA
-python scripts/fpga.py build --top 工程名
+# 改完源码只重编译
+python scripts/fpga.py build --top run_led
 
-# ② 命令行仿真（先在 projects/<工程>/tb 下放 testbench）
-python scripts/fpga.py sim --top 工程名
+# 仿真验证（先 build）
+python scripts/fpga.py sim   --top run_led
 
-# ③ 烧板：把 bit 写入 FPGA（开发板已连接）
-python scripts/fpga.py program --top 工程名
+# 接板烧写（先 build）
+python scripts/fpga.py program --top run_led
 
-# ④ 清理 build/ 产物
-python scripts/fpga.py clean
+# 全部洗掉重来
+python scripts/fpga.py clean && python scripts/fpga.py build --top run_led
 ```
 
-> 不设 `--top` 时，默认使用 `projects/proj1_template`（示例）。
-> 命令内部实际调用：`vivado -mode batch -nolog -nojournal -source scripts/xxx.tcl`。
-> 若你的环境命令是 `python3`，请把 `python` 换成 `python3`。
+### 平台注意
+
+- **Windows + WSL 目录**（仓库位于 `\\wsl.localhost\...`，UNC 路径）：入口脚本会自动
+  `pushd` 映射盘符后再调 Vivado（cmd 不允许把 UNC 当工作目录、Vivado 的 run 流程也需要
+  盘符），因此**无需手动 `net use` / 手动盘符**。
+- **Linux / WSL2**：装 Linux 版 Vivado 并加入 PATH 后，直接 `python3 scripts/fpga.py ...`。
 
 产物位置：
 - 工程文件：`build/<工程名>_prj/`（`<工程名>.xpr`）

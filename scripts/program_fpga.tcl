@@ -1,16 +1,17 @@
 # ============================================================
-# program_fpga.tcl  （跨平台：Windows / Linux 通用）
-# 命令行烧板：通过 Hardware Manager 把 bit 写入 FPGA (JTAG)。
-# 前提：开发板已连接并上电，且驱动/USB 能被 Vivado 识别。
+# program_fpga.tcl  (cross-platform: Windows / Linux)
+# Command-line programming: write the bit to the FPGA (JTAG) via Hardware Manager.
+# Prereq: the board is connected and powered, and the USB/driver is recognized
+#         by Vivado.
 #
-# 用法：
-#   python scripts/fpga.py program --top <工程名>
-#   # 或
+# Usage:
+#   python scripts/fpga.py program --top <proj>
+#   # or
 #   vivado -mode batch -nolog -nojournal \
-#          -source scripts/program_fpga.tcl --top <工程名>
+#          -source scripts/program_fpga.tcl -tclargs --top <proj>
 # ============================================================
 
-# ---------- 参数解析：--top <工程名> ----------
+# ---------- parse args: --top <project> ----------
 set project_name "proj1_template"
 if {$argc > 0} {
     for {set i 0} {$i < $argc} {incr i} {
@@ -22,28 +23,28 @@ if {$argc > 0} {
 
 set bit_file [file join "build" "bin" "${project_name}.bit"]
 if {![file exists $bit_file]} {
-    # 兜底：去 impl_1 运行目录里找
+    # fallback: look in the impl_1 run directory
     set cand [glob -nocomplain \
         [file join "build" "${project_name}_prj" "*.runs" "impl_1" "${project_name}.bit"]]
     if {[llength $cand] > 0} {
         set bit_file [lindex $cand 0]
     } else {
-        error "找不到 bit 文件：${bit_file}"
+        error "Bit file not found: ${bit_file}"
     }
 }
 
-puts "准备烧写的 bit：${bit_file}"
-puts "打开 Hardware Manager 并连接设备..."
+puts "Programming bit: ${bit_file}"
+puts "Opening Hardware Manager and connecting to the device..."
 
 open_hw_manager
 connect_hw_server
 set hw_target [get_hw_targets -regexp .*]
 if {[llength $hw_target] == 0} {
-    error "未发现硬件目标/jtag 设备，请检查开发板连接与驱动。"
+    error "No JTAG/hardware target found. Check the board connection and driver."
 }
 open_hw_target $hw_target
 
-# 选择第一个 fpga（Zynq 通常 device 0）
+# Select the first FPGA (usually device 0 for Zynq)
 set hw_dev [lindex [get_hw_devices] 0]
 current_hw_device $hw_dev
 refresh_hw_device -update_hw_probes false $hw_dev
@@ -52,7 +53,7 @@ set_property PROGRAM.FILE $bit_file $hw_dev
 program_hw_devices $hw_dev
 
 puts "=================================================================="
-puts "烧写完成：${bit_file}"
+puts "Programming complete: ${bit_file}"
 puts "=================================================================="
 close_hw_target $hw_target
 close_hw_manager

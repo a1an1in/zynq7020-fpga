@@ -12,7 +12,7 @@
 *.svf
 *.ltx
 
-# Vivado 目录
+# Vivado 目录（旧版无前缀写法）
 .Xil/
 .ip_user_files/
 .cache/
@@ -23,6 +23,24 @@
 .settings/
 .sdk/
 os/
+
+# Vivado 目录（2015+ 实际生成的是 <工程名>.runs / <工程名>.cache / <工程名>.hw 这类带前缀目录，
+# 上面的无前缀写法匹配不到，故用通配再覆盖一遍）
+*.runs/
+*.cache/
+*.hw/
+*.ip_user_files/
+*.gen/
+*.sim/
+*.srcs/
+
+# ===== 各平台各自的构建目录与工程文件（一律不入库）=====
+# build/ 由 scripts/create_project.tcl 从源码重建，Windows 与 Linux 各建各的，
+# 不互相复制（.xpr 里记录的是生成机器的绝对路径，跨平台不可用）。
+/build/
+*.xpr
+*.xsa
+*.hdf
 
 # 仿真
 *.mem
