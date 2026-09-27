@@ -98,6 +98,7 @@ vivado -version
 | `sim` | **命令行仿真**（需先 build，并在 `projects/<工程>/tb/` 放好 testbench） | `--top <工程名>` | `python scripts/fpga.py sim --top run_led` | 终端打印仿真结果，批处理结束自动退出 |
 | `program` | **烧板**：把 bit 写入 FPGA（需先 build，且 JTAG/开发板已连接） | `--top <工程名>` | `python scripts/fpga.py program --top run_led` | 烧写 `build/<工程名>_prj/.../impl_1/<工程名>.bit` |
 | `clean` | **清理** `build/` 全部编译产物 | 无 | `python scripts/fpga.py clean` | 删除 `build/`；无此目录则提示无需清理 |
+| `load` | **运行时重配 PL**（不重打包 BOOT.bin）：把 .bit 转成 byte-swapped `.bin` 上传板并触发 fpga_manager 全量重配 | `--top <工程名>`，可选 `--ip/--user/--passwd` | `python scripts/fpga.py load --top run_led` | 板需已起 Linux 且主机可 SSH；见「常用组合示例」 |
 
 > - **不设 `--top`** 时，默认使用 `projects/proj1_template`（示例工程）。
 > - `build` 前置条件：`projects/<工程名>/` 存在，源码在 `src/`、约束在 `constraints/`、
@@ -119,6 +120,9 @@ python scripts/fpga.py sim   --top run_led
 
 # 接板烧写（先 build）
 python scripts/fpga.py program --top run_led
+
+# 运行时重配 PL（不重打包 BOOT.bin；需板上已起 Linux 且主机可 SSH）
+python scripts/fpga.py load --top run_led --ip <板IP> --user root --passwd root
 
 # 全部洗掉重来
 python scripts/fpga.py clean && python scripts/fpga.py build --top run_led

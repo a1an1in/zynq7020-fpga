@@ -15,10 +15,13 @@ fpga.py ---- Zynq7020-FPGA 跨平台统一构建入口 (Windows + Linux/WSL2)
     - 各平台各自生成 build/，互不冲突，均不入 git。
 """
 import argparse
+import glob
 import os
 import shutil
 import subprocess
 import sys
+import tempfile
+import time
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SCRIPTS = os.path.join(ROOT, "scripts")
@@ -98,6 +101,96 @@ def cmd_sim(args):
     run(full)
 
 
+def _ssh(ip, user, passwd, cmd):
+    """在板上执行 shell 命令（sshpass + ssh）。"""
+    argv = ["sshpass", "-p", passwd, "ssh",
+            "-o", "StrictHostKeyChecking=no",
+            "-o", "UserKnownHostsFile=/dev/null",
+            f"{user}@{ip}", cmd]
+    return subprocess.run(argv)
+
+
+def _scp(ip, user, passwd, src, dst):
+    """上传文件到板（sshpass + scp）。"""
+    argv = ["sshpass", "-p", passwd, "scp",
+            "-o", "StrictHostKeyChecking=no",
+            "-o", "UserKnownHostsFile=/dev/null",
+            src, f"{user}@{ip}:{dst}"]
+    return subprocess.run(argv)
+
+
+def find_bit(top):
+    """跟 program_fpga.tcl 相同的路径约定，定位 <top>.bit。"""
+    candidates = [os.path.join(BUILD, "bin", f"{top}.bit")] \
+        + sorted(glob.glob(os.path.join(BUILD, f"{top}_prj", "*", "impl_1", f"{top}.bit")))
+    for c in candidates:
+        if os.path.isfile(c):
+            return c
+    raise SystemExit(f"[error] 未找到 {top}.bit，请先: python scripts/fpga.py build --top {top}")
+
+
+def _bootgen_cfg():
+    """返回 (bootgen 路径, 加载它的 ld-linux, LD_LIBRARY_PATH)。
+    默认用本仓库 SDK 的 buildtools bootgen；可用环境变量 BOOTGEN/BOOTGEN_LD/BOOTGEN_LIBDIR 覆盖。"""
+    sdk = "/home/alan/workspace/zynq/zynq7020-arm/sdk/petalinux/components/yocto"
+    sysroot = os.path.join(sdk, "buildtools_extended", "sysroots", "x86_64-petalinux-linux")
+    bg = os.environ.get("BOOTGEN", os.path.join(sysroot, "usr", "bin", "bootgen"))
+    bg_ld = os.environ.get("BOOTGEN_LD", os.path.join(sysroot, "lib", "ld-linux-x86-64.so.2"))
+    libdir = os.environ.get(
+        "BOOTGEN_LIBDIR",
+        os.path.join(sysroot, "usr", "lib") + os.pathsep + os.path.join(sysroot, "lib"))
+    return bg, bg_ld, libdir
+
+
+def _bit_to_bin(bit):
+    """把 Vivado 原始 .bit 转成 Zynq 运行时可认的 byte-swapped .bin（bootgen 生成）。"""
+    bg, bg_ld, libdir = _bootgen_cfg()
+    if not os.path.isfile(bg):
+        raise SystemExit(f"[error] bootgen 不存在: {bg}（可用 env BOOTGEN 指定）")
+    work = tempfile.mkdtemp(prefix="fpga_bin_")
+    bif = os.path.join(work, "x.bif")
+    out = os.path.join(work, os.path.splitext(os.path.basename(bit))[0] + ".bin")
+    with open(bif, "w") as f:
+        f.write("the_ROM_image:\n{\n  %s\n}\n" % bit)
+    env = dict(os.environ)
+    env["LD_LIBRARY_PATH"] = libdir
+    print(f"  -> 转换 .bit → byte-swapped .bin : {out}")
+    rc = subprocess.run([bg_ld, bg, "-arch", "zynq", "-image", bif, "-o", "i", out, "-w"],
+                        env=env)
+    if rc.returncode != 0:
+        raise SystemExit("[error] bootgen 转换失败")
+    return out
+
+
+def cmd_load(args):
+    """运行时重配 PL：bit→bin → scp 上传 → fpga_manager firmware。不改 BOOT.BIN。"""
+    ip = args.ip or "10.10.10.93"
+    user = args.user or "root"
+    passwd = args.passwd or "root"
+
+    if not args.top:
+        raise SystemExit("[error] load 需提供 --top <proj>（自动由 build 产物 .bit 转换并加载）")
+    bit = find_bit(args.top)
+    print(f"  bit   : {bit}")
+    bin_file = _bit_to_bin(bit)
+    print(f"  bin   : {bin_file}")
+
+    fw = f"fpga_{int(time.time())}.bin"
+    print(f"  上传  : {os.path.basename(bin_file)} -> {ip}:/lib/firmware/{fw}")
+    if _scp(ip, user, passwd, bin_file, f"/tmp/{fw}").returncode != 0:
+        raise SystemExit("[error] scp 上传失败")
+    cmd = (f"mkdir -p /lib/firmware; cp /tmp/{fw} /lib/firmware/{fw}; "
+           f"echo 加载前=$(cat /sys/class/fpga_manager/fpga0/state 2>/dev/null); "
+           f"echo {fw} > /sys/class/fpga_manager/fpga0/firmware; "
+           f"sleep 1; "
+           f"echo 加载后=$(cat /sys/class/fpga_manager/fpga0/state 2>/dev/null)")
+    p = _ssh(ip, user, passwd, cmd)
+    if p.returncode != 0:
+        raise SystemExit(f"[error] ssh 执行失败(rc={p.returncode})")
+    print("==> PL 已运行时重配（BOOT.BIN 未动）。若该 bit 不含以太网，PL 内网络会中断；"
+          "重启即回 BOOT.BIN 内嵌 bit。")
+
+
 def cmd_clean(args):
     if os.path.isdir(BUILD):
         shutil.rmtree(BUILD, ignore_errors=True)
@@ -125,6 +218,13 @@ def main():
 
     pc = sub.add_parser("clean", help="clean build/ artifacts")
     pc.set_defaults(func=cmd_clean)
+
+    pl = sub.add_parser("load", help="runtime-reload PL: bit->bin, upload, fpga_manager (不重打包 BOOT.BIN)")
+    pl.add_argument("--top", help="project folder name under projects/")
+    pl.add_argument("--ip", help="board IP (default 10.10.10.93)")
+    pl.add_argument("--user", help="ssh user (default root)")
+    pl.add_argument("--passwd", help="ssh password (default root)")
+    pl.set_defaults(func=cmd_load)
 
     args = p.parse_args()
     args.func(args)
