@@ -66,11 +66,6 @@ if {[llength $tb_files] > 0} {
 set tb_top [file rootname [file tail [lindex $tb_files 0]]]
 set_property top ${tb_top} [get_filesets sim_1]
 
-# Clear any stale incremental xsim build so a repeated `sim` always links cleanly
-# (otherwise xsim --incr can fail to link against leftover objects).
-set sim_xsim_dir [file join $build_dir "${project_name}.sim" "sim_1" "behav" "xsim"]
-file delete -force $sim_xsim_dir
-
 launch_simulation
 run -all
 # End the batch simulation. If the testbench calls $finish the xsim session is
