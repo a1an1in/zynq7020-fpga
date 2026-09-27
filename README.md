@@ -10,6 +10,12 @@ Zynq-7020 FPGA/PL（硬件侧）工程仓库。
 > 规定了哪些文件入库、哪些是中间产物、Block Design 与换行的跨平台约定，
 > 保证同一仓库在 Windows 和 Linux/WSL2 下使用一致。
 
+> 💻 **开发/构建环境（备忘）**：本 FPGA(PL) 工程实际在 **Windows + Vivado** 上开发，入口
+> `scripts/fpga.py` 会自动定位 vivado（优先级：`VIVADO` 环境变量 → `PATH` → 常见安装路径）。
+> **当前这台 Linux(WSL) 仅为省空间未安装 Vivado**，在此跑 `build/sim/program` 会因找不到
+> vivado 而报 `vivado: command not found` 失败；需要 .bit / XSA 等固件请到 Windows 下构建，
+> 或直接使用父仓库下配套的现成镜像（`zynq7020-arm` 侧编译产物）。`--help` / `clean` 等不依赖
+> vivado 的子命令在本机可正常使用。
 ---
 
 ## 整体结构
