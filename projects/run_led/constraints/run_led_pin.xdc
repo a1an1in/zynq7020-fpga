@@ -19,3 +19,4 @@ set_property IOSTANDARD LVCMOS33 [get_ports {led_o[*]}]
 
 #对bit大小进行压缩，可以节省程序存储空间
 set_property BITSTREAM.GENERAL.COMPRESS true [current_design]
+#（SD/配置链路的 CFGBVS / CONFIG_VOLTAGE 已单独放 constraints/config.xdc，便于跨工程移植）

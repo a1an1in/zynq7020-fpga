@@ -66,8 +66,43 @@ if {[llength $tb_files] > 0} {
 set tb_top [file rootname [file tail [lindex $tb_files 0]]]
 set_property top ${tb_top} [get_filesets sim_1]
 
+# Clear any stale incremental xsim build so a repeated `sim` always links cleanly
+# (otherwise xsim --incr can fail to link against leftover objects).
+set sim_xsim_dir [file join $build_dir "${project_name}.sim" "sim_1" "behav" "xsim"]
+file delete -force $sim_xsim_dir
+
+puts "\n=================================================================="
+puts "(SIM) Starting behavioral simulation (top = ${tb_top})..."
+puts "==================================================================\n"
 launch_simulation
 run -all
 # End the batch simulation. If the testbench calls $finish the xsim session is
 # already closed, so swallow any error from quit_sim (batch mode).
 catch { quit_sim -quiet }
+
+# --- Read the testbench verdict file and print ONE decisive line ---
+# The self-checking testbench writes a file "sim_verdict.txt" containing
+# "PASS" or "FAIL" into the xsim working directory.
+set verdict_ok     0
+set verdict_line   "NO-VERDICT"
+set verdict_file [file join $sim_xsim_dir "sim_verdict.txt"]
+if {[file exists $verdict_file]} {
+    set fp [open $verdict_file r]
+    set verdict_line [string trim [read $fp]]
+    close $fp
+}
+if {[string equal $verdict_line "PASS"]} { set verdict_ok 1 }
+
+puts "\n=================================================================="
+if {$verdict_ok} {
+    puts "  RESULT: SIMULATION PASSED"
+} else {
+    puts "  RESULT: SIMULATION FAILED  (verdict file gave: '${verdict_line}')"
+}
+puts "=================================================================="
+
+# Make an automated caller (e.g. fpga.py) see failure via the exit code.
+if {!$verdict_ok} {
+    exit 1
+}
+exit 0

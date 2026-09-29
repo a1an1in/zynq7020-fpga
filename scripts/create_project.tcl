@@ -37,7 +37,7 @@ if {![file isdirectory $proj_src]} {
 
 # ---------- create project ----------
 create_project ${project_name} $build_dir -part ${fpga_part} -force
-set_property target_language VHDL   [current_project]
+set_property target_language Verilog   [current_project]
 set_property default_lib   xil_defaultlib [current_project]
 
 # ---------- auto-collect source files ----------
@@ -100,6 +100,19 @@ if {[llength $bd_scripts] > 0} {
         puts "Sourcing Block Design script: ${bd_tcl}"
         source $bd_tcl
     }
+    # Generate an HDL wrapper for each BD so the (merged) top can instantiate it.
+    # (system.tcl from write_bd_tcl does NOT create a wrapper.)
+    foreach bd [get_bd_designs -quiet] {
+        puts "Creating wrapper for BD: ${bd}"
+        set bd_file [get_files -quiet [get_property NAME ${bd}].bd]
+        make_wrapper -files $bd_file -top
+    }
+    set wrapper_files [glob -nocomplain \
+        [file join $build_dir "*.gen" "sources_1" "bd" "*" "hdl" "*_wrapper.*"]]
+    if {[llength $wrapper_files] > 0} {
+        add_files -norecurse $wrapper_files
+        puts "Added wrapper file(s): $wrapper_files"
+    }
 } else {
     puts "No ${proj_src}/bd/*.tcl found; treating as a pure-RTL project."
 }
@@ -137,6 +150,16 @@ if {[get_property PROGRESS [get_runs impl_1]] != "100%"} {
 }
 
 set bit_dir [get_property DIRECTORY [get_runs impl_1]]
+
+# Vivado names the bitstream after the top module (run_led_top) when it differs
+# from the project name. Normalize to <project_name>.bit so that program/load and
+# the framework's `<top>.bit` conventions all use one stable name.
+foreach sb [glob -nocomplain [file join $bit_dir "*.bit"]] {
+    if {[string equal [file tail $sb] "${project_name}.bit"]} { continue }
+    file copy -force $sb [file join $bit_dir "${project_name}.bit"]
+    puts "Bitstream normalized: [file tail $sb] -> ${project_name}.bit"
+}
+
 puts "================================================================"
 puts "Build OK! Bitstream at: ${bit_dir}/${project_name}.bit"
 puts "Project files at: ${build_dir}/"

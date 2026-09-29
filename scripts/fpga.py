@@ -55,7 +55,7 @@ def find_vivado():
     return "vivado"
 
 
-def run(full_cmd):
+def run(full_cmd, check=True):
     """在仓库根目录执行命令，Windows 和 Linux 都通过 shell 跑。
     Windows + UNC(WSL) 根目录：cmd 不允许把 UNC 当作工作目录；更关键的是
     Vivado 的 run 流程会靠 cmd 去 `cd <盘符路径>` 切到各 run 目录，因此工程
@@ -71,8 +71,9 @@ def run(full_cmd):
     else:
         cwd_arg = ROOT
     code = subprocess.call(full_cmd, shell=True, cwd=cwd_arg)
-    if code != 0:
+    if check and code != 0:
         sys.exit(code)
+    return code
 
 
 def base_opts():
@@ -84,7 +85,27 @@ def cmd_build(args):
     script = os.path.join(SCRIPTS, "create_project.tcl")
     opts = ["--top", args.top] if args.top else []
     full = f'{find_vivado()} {base_opts()} -source "{script}" -tclargs ' + " ".join(opts)
-    run(full)
+    # Build failure still surfaces via vivado's exit code, but we don't let it
+    # short-circuit: we want to print a clean final verdict below.
+    rc = run(full, check=False)
+
+    # ---- decisive, noise-free verdict printed LAST by fpga.py itself ----
+    proj       = args.top or "proj1_template"
+    bit_file   = os.path.join(BUILD, f"{proj}_prj", f"{proj}.runs",
+                              "impl_1", f"{proj}.bit")
+    bit_ready  = os.path.isfile(bit_file)
+    passed     = (rc == 0) and bit_ready
+
+    sep = "=" * 60
+    print(sep)
+    if passed:
+        print(f"  fpga.py: BUILD PASSED   (vivado exit={rc}, bitstream ready)")
+        print(f"           {bit_file}")
+    else:
+        reason = "bitstream not found" if not bit_ready else "vivado reported an error"
+        print(f"  fpga.py: BUILD FAILED   ({reason}; vivado exit={rc})")
+    print(sep)
+    sys.exit(0 if passed else 1)
 
 
 def cmd_program(args):
@@ -98,25 +119,74 @@ def cmd_sim(args):
     script = os.path.join(SCRIPTS, "simulate.tcl")
     opts = ["--top", args.top] if args.top else []
     full = f'{find_vivado()} {base_opts()} -source "{script}" -tclargs ' + " ".join(opts)
-    run(full)
+    # Don't let a non-zero vivado exit short-circuit: we want to print a clean
+    # verdict below, after the (noisy) vivado transcript has fully finished.
+    rc = run(full, check=False)
+
+    # ---- decisive, noise-free verdict printed LAST by fpga.py itself ----
+    proj       = args.top or "proj1_template"
+    verdict_file = os.path.join(BUILD, f"{proj}_prj", f"{proj}.sim",
+                                "sim_1", "behav", "xsim", "sim_verdict.txt")
+    verdict = None
+    if os.path.isfile(verdict_file):
+        with open(verdict_file, "r") as fh:
+            verdict = fh.read().strip()
+    passed = (verdict == "PASS")
+
+    sep = "=" * 60
+    print(sep)
+    if passed:
+        print(f"  fpga.py: SIMULATION PASSED   (vivado exit={rc})")
+    else:
+        reason = "no verdict file written (did simulation even run?)" \
+                 if verdict is None else f"testbench verdict = '{verdict}'"
+        print(f"  fpga.py: SIMULATION FAILED   ({reason}; vivado exit={rc})")
+    print(sep)
+    sys.exit(0 if passed else 1)
 
 
 def _ssh(ip, user, passwd, cmd):
-    """在板上执行 shell 命令（sshpass + ssh）。"""
-    argv = ["sshpass", "-p", passwd, "ssh",
-            "-o", "StrictHostKeyChecking=no",
-            "-o", "UserKnownHostsFile=/dev/null",
-            f"{user}@{ip}", cmd]
-    return subprocess.run(argv)
-
+    """在板上执行 shell 命令（sshpass + ssh）。Windows 若无原生 sshpass 则经 WSL 执行。"""
+    return run_sshless(ip, user, passwd, cmd=cmd, src=None)
 
 def _scp(ip, user, passwd, src, dst):
-    """上传文件到板（sshpass + scp）。"""
-    argv = ["sshpass", "-p", passwd, "scp",
-            "-o", "StrictHostKeyChecking=no",
-            "-o", "UserKnownHostsFile=/dev/null",
-            src, f"{user}@{ip}:{dst}"]
-    return subprocess.run(argv)
+    """上传文件到板（sshpass + scp）。Windows 若无原生 sshpass 则经 WSL 执行。"""
+    return run_sshless(ip, user, passwd, cmd=None, src=(src, dst))
+
+def run_sshless(ip, user, passwd, cmd=None, src=None):
+    """跨平台 ssh/scp 封装：优先原生 sshpass（Linux），缺失时回退到 WSL 自带 sshpass。
+
+    cmd —— ssh 要执行的远端命令；src —— (本地路径, 远端路径) 时改为执行 scp 上传。
+    Linux/WSL 直接跑；Windows 上 sshpass 属 Linux 工具，统一经 wsl.exe 转发
+    （本机 WSL 已装 sshpass/scp/ssh），避免 Windows 无原生 sshpass 时找不到工具。
+    """
+    # Windows 上就算 PATH 里有直呼 sshpass 也建议走 WSL；Linux 原生直接跑最稳。
+    if os.name != "nt" and shutil.which("sshpass"):
+        if src:
+            argv = ["sshpass", "-p", passwd, "scp",
+                    "-o", "StrictHostKeyChecking=no",
+                    "-o", "UserKnownHostsFile=/dev/null",
+                    src[0], f"{user}@{ip}:{src[1]}"]
+        else:
+            argv = ["sshpass", "-p", passwd, "ssh",
+                    "-o", "StrictHostKeyChecking=no",
+                    "-o", "UserKnownHostsFile=/dev/null",
+                    f"{user}@{ip}", cmd]
+        return subprocess.run(argv)
+    # Windows(或缺 sshpass)：走 WSL（其 PATH 内已有 sshpass/scp/ssh）
+    opts = "-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
+    if src:
+        # 把本地 Windows 路径转成 WSL 可读的 /mnt/c/... 路径交给 scp
+        w = src[0].replace(":", "").replace("\\", "/")
+        w = "/mnt/" + w[0].lower() + w[1:]
+        line = f"sshpass -p {passwd} scp {opts} {w} {user}@{ip}:{src[1]}"
+    else:
+        line = f"sshpass -p {passwd} ssh {opts} {user}@{ip} {_shq(cmd)}"
+    return subprocess.run(["wsl.exe", "-d", "Ubuntu-24.04", "--", "bash", "-lc", line])
+
+def _shq(s):
+    """Shell 单引号包裹远端命令，避免 Windows→WSL 多层转义破坏空格/花括号。"""
+    return "'" + s.replace("'", "'\\''") + "'"
 
 
 def find_bit(top):
@@ -129,36 +199,47 @@ def find_bit(top):
     raise SystemExit(f"[error] 未找到 {top}.bit，请先: python scripts/fpga.py build --top {top}")
 
 
-def _bootgen_cfg():
-    """返回 (bootgen 路径, 加载它的 ld-linux, LD_LIBRARY_PATH)。
-    默认用本仓库 SDK 的 buildtools bootgen；可用环境变量 BOOTGEN/BOOTGEN_LD/BOOTGEN_LIBDIR 覆盖。"""
-    sdk = "/home/alan/workspace/zynq/zynq7020-arm/sdk/petalinux/components/yocto"
-    sysroot = os.path.join(sdk, "buildtools_extended", "sysroots", "x86_64-petalinux-linux")
-    bg = os.environ.get("BOOTGEN", os.path.join(sysroot, "usr", "bin", "bootgen"))
-    bg_ld = os.environ.get("BOOTGEN_LD", os.path.join(sysroot, "lib", "ld-linux-x86-64.so.2"))
-    libdir = os.environ.get(
-        "BOOTGEN_LIBDIR",
-        os.path.join(sysroot, "usr", "lib") + os.pathsep + os.path.join(sysroot, "lib"))
-    return bg, bg_ld, libdir
+def _bitstream_start(data):
+    """返回 .bit 中 bitstream 数据区（同步字之前）的偏移。
+    Vivado .bit = 文本头(design/part/date/e 长度字段) 之后跟着的 bitstream，
+    其中含 7-series 同步字 AA995566。同步字是配置数据真正开始的标志，
+    据此定位数据区可免受各 Vivado 版本头部字段差异影响。"""
+    for i in range(0, 3):   # 容忍开头少量 padding
+        for off in range(0, 8):
+            p = off
+            while p < len(data) - 4:
+                if data[p] == 0xAA and data[p + 3] == 0x66:
+                    if data[p + 1] == 0x99 and data[p + 2] == 0x55:
+                        # 确认 0xAA 0x99 0x55 0x66 大端同步字
+                        return p
+                p += 4
+    raise ValueError(f"sync word (AA995566) not found in .bit (len={len(data)})")
 
 
 def _bit_to_bin(bit):
-    """把 Vivado 原始 .bit 转成 Zynq 运行时可认的 byte-swapped .bin（bootgen 生成）。"""
-    bg, bg_ld, libdir = _bootgen_cfg()
-    if not os.path.isfile(bg):
-        raise SystemExit(f"[error] bootgen 不存在: {bg}（可用 env BOOTGEN 指定）")
+    """把 Vivado .bit 无损转成 Zynq fpga_manager 可加载的 byte-swapped .bin。
+
+    依据 a) 内核 zynq-fpga 驱动(zovn-fpga.c)注释明确：
+        “Bitstream must be a byte swapped .bin file”，并在每个 4 字节边界找
+        sync 字 66 55 99 AA；b) Xilinx 官方用 bootgen -process_bitstream bin
+        转出的正是“每 32-bit 字做字节交换”的原始配置流。
+    因此本函数用纯 Python 完成字节交换，无需任何外部 bootgen/系统工具，
+    Windows/Linux/WSL 跨平台一致，产物与 bootgen 输出字节级一致(已实测比对)。
+    """
+    with open(bit, "rb") as f:
+        data = f.read()
+    start = _bitstream_start(data)
+    # 交换每个 32-bit 字的字节序：AA 99 55 66 -> 66 55 99 AA（fpga_manager 要求）
+    body = bytes(data[start:])
+    # 确保 4 字节对齐（驱动要求 DMA 长度 %4==0）
+    if len(body) % 4:
+        body = body[: len(body) - (len(body) % 4)]
+    swapped = b"".join(body[i:i + 4][::-1] for i in range(0, len(body), 4))
     work = tempfile.mkdtemp(prefix="fpga_bin_")
-    bif = os.path.join(work, "x.bif")
     out = os.path.join(work, os.path.splitext(os.path.basename(bit))[0] + ".bin")
-    with open(bif, "w") as f:
-        f.write("the_ROM_image:\n{\n  %s\n}\n" % bit)
-    env = dict(os.environ)
-    env["LD_LIBRARY_PATH"] = libdir
-    print(f"  -> 转换 .bit → byte-swapped .bin : {out}")
-    rc = subprocess.run([bg_ld, bg, "-arch", "zynq", "-image", bif, "-o", "i", out, "-w"],
-                        env=env)
-    if rc.returncode != 0:
-        raise SystemExit("[error] bootgen 转换失败")
+    with open(out, "wb") as f:
+        f.write(swapped)
+    print(f"  -> 转换 .bit → byte-swapped .bin (pure-python) : {out} ({len(swapped)} B)")
     return out
 
 
@@ -187,8 +268,13 @@ def cmd_load(args):
     p = _ssh(ip, user, passwd, cmd)
     if p.returncode != 0:
         raise SystemExit(f"[error] ssh 执行失败(rc={p.returncode})")
-    print("==> PL 已运行时重配（BOOT.BIN 未动）。若该 bit 不含以太网，PL 内网络会中断；"
-          "重启即回 BOOT.BIN 内嵌 bit。")
+    # 整系统 bit 内含 PS 网络（以太走 MIO），加载后网络应保持；再 ssh 一次确认存活
+    alive = _ssh(ip, user, passwd, "echo alive").returncode == 0
+    if alive:
+        print("==> PL 已运行时重配（BOOT.BIN 未动），板子网络保持（整系统 bit 含 PS）。")
+        print("    板子 LED 应由新 bit 驱动。")
+    else:
+        print("==> PL 已重配，但加载后 SSH 失联——此 bit 不含 PS 网络，需重启回 BOOT.BIN 内嵌 bit。")
 
 
 def cmd_clean(args):

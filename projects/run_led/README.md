@@ -1,6 +1,8 @@
 # run_led（流水灯 · 移植自米联客 MLK-F6-CZ06-7020 例程 CH05）
 
-> 纯 PL 入门工程：4 个 LED 按固定间隔循环移位（`led_o` 低位向高位轮转）。
+> **整系统工程（PS + 流水灯）**：被加载的 PL bit 本身含 Zynq PS 系统块（DDR / MIO / 以太），
+> SD 启动 Linux 后在运行中 `load` 该 bit，**PS 网络不断、PL 的 LED 照常跑**。LED 逻辑来自
+> 米联客 MLK-F6-CZ06-7020 例程 CH05（4 个 LED 固定间隔循环移位）。
 
 ## 一览
 
@@ -8,20 +10,23 @@
 |------|-----|
 | 开发板 | MLK-F6-CZ06-7020（米联客 F6 系列 7020 板） |
 | 器件 / 封装 | `xc7z020clg484-2`（Zynq-7020，CLG484，-2 速度等级） |
-| 顶层模块 | `run_led`（与工程目录同名 —— 框架约定：产物为 `build/run_led_prj/…/run_led.bit`） |
-| IP | 无（不使用任何 `.xci`） |
-| Block Design | 无（纯 PL，因此不导出 XSA） |
-| 系统时钟 | `sysclk_p` = 100 MHz（XDC：`create_clock -period 10.000`） |
-| 移植日期 | 2026-09-24 |
+| 顶层模块 | `run_led_top`（例化 `system_wrapper`(PS) + `run_led`(LED)）；产物按框架约定为 `build/run_led_prj/…/run_led.bit` |
+| Block Design | 有 `bd/system.tcl`（Zynq PS7，DDR + FIXED_IO，以太走 MIO；构建时自动 source 并生成 wrapper） → **会导出 XSA**：`build/run_led.xsa`（含 bit） |
+| IP | 由 BD 生成：`processing_system7`、`axi_interconnect`、`proc_sys_reset`、`xadc_wiz`、`ila` |
+| 系统时钟 | LED 时钟 `sysclk_p`=100 MHz（XDC：`create_clock -period 10.000`）；PS 用 BD 内 `FCLK_CLK0` |
+| 移植日期 | 2026-09-24（重构为整系统 2026-09-29） |
 
 ## 目录内容与来源
 
 | 路径 | 内容 | 原始例程内的位置 |
 |------|------|------------------|
-| `src/run_led.v` | 顶层：分频计数 + 4bit 循环移位 | `CH05_run_led/fpga_prj/uisrc/01_rtl/run_led.v` |
-| `constraints/run_led_pin.xdc` | 时钟 / 复位 / LED 管脚与电平约束 | `CH05_run_led/fpga_prj/uisrc/04_pin/fpga_pin.xdc` |
+| `src/run_led.v` | LED 顶层（分频计数 + 4bit 循环移位） | `CH05_run_led/fpga_prj/uisrc/01_rtl/run_led.v` |
+| `src/run_led_top.v` | **整系统顶层**：例化 `system_wrapper`（PS）＋ `run_led`（LED） | 本工程新增 |
+| `bd/system.tcl` | **Zynq PS 系统 Block Design**（DDR + FIXED_IO，以太走 MIO） | 从 `C:\Users\a1an1in\workspace\system.tcl` 纳入 |
+| `top.txt` | 显式顶层 = `run_led_top` | 本工程新增 |
+| `constraints/run_led_pin.xdc` | LED / 复位 / 时钟管脚与电平约束 | `CH05_run_led/fpga_prj/uisrc/04_pin/fpga_pin.xdc` |
 | `tb/tb_run_led.v` | testbench（`T_INR_CNT_SET=1000` 缩短仿真时间） | `CH05_run_led/fpga_prj/uisrc/02_sim/tb_run_led.v` |
-| `ip/` | 空（本工程不需要 IP） | — |
+| `ip/` | 空（BD 所需 IP 由 `bd/system.tcl` 生成） | — |
 
 例程包：米联客 F6-7020 官方资料 `3-1_ex_soc_fpga/3-1-01_ex_fpga_base__F6-020`
 → `3-1-01_ex_fpga_base_CZ06_F6_7020/CH05_run_led`（Vivado v2021.1 工程，本机 Vivado 版本一致）。
@@ -53,13 +58,22 @@
 ## 使用
 
 ```bash
-python scripts/fpga.py build   --top run_led    # 建工程 + 综合 + 实现 + 出 bit
+python scripts/fpga.py build   --top run_led    # 建工程 + 综合 + 实现 + 出 bit + 导 XSA
 python scripts/fpga.py sim     --top run_led    # 命令行仿真（需先 build）
 python scripts/fpga.py program --top run_led    # 烧板（先连好 JTAG）
+python scripts/fpga.py load    --top run_led    # 运行时重配 PL（SD 启动 Linux 后用）
 ```
 
-产物：`build/run_led_prj/run_led.xpr`、`build/run_led_prj/run_led.runs/impl_1/run_led.bit`。
-本工程无 PS/BD，脚本会提示"未检测到硬件平台，跳过 XSA 导出"，属正常。
+产物：`build/run_led_prj/run_led.xpr`、`build/run_led_prj/run_led.runs/impl_1/run_led.bit`、
+`build/run_led.xsa`（含 bit，给 ARM/软件侧）。
+
+> **为什么用 `load` 网络不断**：Zynq 的 fpga_manager 是**整片重配 PL**。早期那份纯 PL `run_led.bit` 不含
+> PS/以太，所以灌进 PL 后网络依赖的 PL 侧资源没了 → 掉线。现在 `run_led.bit` 是 `run_led_top`
+> （`system_wrapper`（PS，DDR/FIXED_IO/以太走 MIO）＋ `run_led`），整片重配后 PS 所依赖的接口原样保留，
+> 故**网络保持、LED 同时点亮**。
+>
+> 流程：SD 卡启动 Linux（BOOT.BIN 内置参考位流，网络正常）→ `python scripts/fpga.py load --top run_led`
+> （自动 bit→bin、scp 上传、写 `/sys/class/fpga_manager/fpga0/firmware`）。想回退：重启板子即可。
 
 ## 备注
 

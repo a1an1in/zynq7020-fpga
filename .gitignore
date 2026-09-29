@@ -34,6 +34,10 @@ os/
 *.sim/
 *.srcs/
 
+# Vivado 跑含 Zynq PS7 工程时会在当前工作目录自动生成的 PS 汇总报告（临时产物，无用）
+NA/
+ps7_summary.html
+
 # ===== 各平台各自的构建目录与工程文件（一律不入库）=====
 # build/ 由 scripts/create_project.tcl 从源码重建，Windows 与 Linux 各建各的，
 # 不互相复制（.xpr 里记录的是生成机器的绝对路径，跨平台不可用）。
