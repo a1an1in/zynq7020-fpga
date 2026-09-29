@@ -112,9 +112,6 @@ vivado -version
 # 首次需要：建工程+编译+出 bit
 python scripts/fpga.py build --top run_led
 
-# 改完源码只重编译
-python scripts/fpga.py build --top run_led
-
 # 仿真验证（先 build）
 python scripts/fpga.py sim   --top run_led
 
@@ -122,7 +119,7 @@ python scripts/fpga.py sim   --top run_led
 python scripts/fpga.py program --top run_led
 
 # 运行时重配 PL（不重打包 BOOT.bin；需板上已起 Linux 且主机可 SSH）
-python scripts/fpga.py load --top run_led --ip 10.10.10.222 --user root --passwd root
+python scripts/fpga.py load --top run_led --ip <板IP> --user root --passwd root
 
 # 全部洗掉重来
 python scripts/fpga.py clean && python scripts/fpga.py build --top run_led

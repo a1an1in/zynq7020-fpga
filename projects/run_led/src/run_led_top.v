@@ -8,6 +8,10 @@
  *
  * 端口与 build 生成的 system_wrapper.v 严格一致（DDR_dqs_p、
  * FIXED_IO_ddr_vrn/vrp、FIXED_IO_ps_porb/ps_srstb 等）。
+ *
+ * 另：板上 LED1/2/3（PL 脚 H15/R15/C15）此前无任何位流驱动（Hi-Z），
+ * 被板上拉拉成常亮。这里新增 led_off[2:0] 恒 0，显式拉低这三脚，
+ * 使 run_led bit 加载后流水灯照常跑、同时三颗常亮灯熄灭。
  ************************************************************/
 module run_led_top (
     // ---- PS 内存接口（DDR + 固定IO，透传保证 DDR 工作）----
@@ -36,7 +40,10 @@ module run_led_top (
     // ---- PL 侧独立 IO：流水灯 ----
     input         sysclk_p,      // 板载 100MHz（管脚约束在 run_led_pin.xdc）
     input         rstn_i,        // 复位按键，低有效
-    output [3:0]  led_o
+    output [3:0]  led_o,
+
+    // ---- 常亮三颗 LED（H15/R15/C15），显式拉 0 熄灭 ----
+    output [2:0]  led_off
 );
 
     // 例化 PS 系统（Block Design "system" 的 wrapper）
@@ -70,5 +77,8 @@ module run_led_top (
         .rstn_i   (rstn_i),
         .led_o    (led_o)
     );
+
+    // H15 / R15 / C15 三脚显式输出 0（熄灭常亮 LED1/2/3）
+    assign led_off = 3'b000;
 
 endmodule

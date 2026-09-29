@@ -1,18 +1,18 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-fpga.py ---- Zynq7020-FPGA 跨平台统一构建入口 (Windows + Linux/WSL2)
+fpga.py ---- Zynq7020-FPGA cross-platform build entry (Windows + Linux/WSL2)
 
-用 法（Windows cmd/PowerShell 和 Linux 完全一致）：
-    python scripts/fpga.py build   --top 工程名    # 编译: 建工程+综合+实现+出bit+XSA
-    python scripts/fpga.py program --top 工程名    # 烧板: 把 bit 通过 Hardware Manager 写入 FPGA
-    python scripts/fpga.py sim     --top 工程名    # 仿真(需在工程下有 testbench，可扩展)
-    python scripts/fpga.py clean                   # 清理 build/ 产物
+Usage (same from Windows cmd/PowerShell and Linux):
+    python scripts/fpga.py build   --top <proj>    # compile: project+synth+impl+bit+XSA
+    python scripts/fpga.py program --top <proj>    # program board: write bit via Hardware Manager
+    python scripts/fpga.py sim     --top <proj>    # simulate (needs a testbench under the project)
+    python scripts/fpga.py clean                   # remove build/ artifacts
 
-说 明：
-    - 不依赖 shell，跨平台安全。
-    - 自动定位 vivado：优先环境变量 VIVADO，其次 PATH，再次常见安装路径。
-    - 各平台各自生成 build/，互不冲突，均不入 git。
+Notes:
+    - No shell dependence; safe and cross-platform.
+    - Locates vivado: $VIVADO env var first, then PATH, then common install paths.
+    - Each platform gets its own build/ dir; not git-tracked.
 """
 import argparse
 import glob
@@ -27,26 +27,26 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SCRIPTS = os.path.join(ROOT, "scripts")
 BUILD = os.path.join(ROOT, "build")
 
-# 常见 Vivado 版本，用于兜底搜索（含本机已安装的 2021.1）
+# Common Vivado versions used as a fallback search list (2021.1 is installed here)
 COMMON_VERSIONS = ["2023.2", "2022.2", "2021.2", "2021.1", "2020.2", "2019.2"]
 
 
 def find_vivado():
-    """返回可用的 vivado 命令/完整路径，找不到则返回 'vivado'（尝试交给系统）。"""
-    # 1) 显式环境变量
+    """Return a usable vivado command/path, or 'vivado' if none found (let the OS try)."""
+    # 1) explicit env var
     env = os.environ.get("VIVADO")
     if env:
         return env
-    # 2) PATH 里是否已有
+    # 2) already on PATH
     on_path = shutil.which("vivado")
     if on_path:
         return on_path
-    # 3) 常见安装路径兜底
+    # 3) common install paths
     candidates = []
     for v in COMMON_VERSIONS:
         candidates.append(rf"C:\Xilinx\Vivado\{v}\bin\vivado.bat")  # Windows
         candidates.append(f"/opt/Xilinx/Vivado/{v}/bin/vivado")     # Linux
-        candidates.append(f"/tools/Xilinx/Vivado/{v}/bin/vivado")   # Linux(其他)
+        candidates.append(f"/tools/Xilinx/Vivado/{v}/bin/vivado")   # Linux (other)
     for c in candidates:
         if os.path.isfile(c):
             return c
@@ -56,28 +56,51 @@ def find_vivado():
 
 
 def run(full_cmd, check=True):
-    """在仓库根目录执行命令，Windows 和 Linux 都通过 shell 跑。
-    Windows + UNC(WSL) 根目录：cmd 不允许把 UNC 当作工作目录；更关键的是
-    Vivado 的 run 流程会靠 cmd 去 `cd <盘符路径>` 切到各 run 目录，因此工程
-    （落在相对 build/ 下）必须是盘符路径。这里先 pushd 自动映射盘符再执行，
-    让 python 成为跨平台唯一入口，用户无需手动映射盘符。Linux 直接用真实根目录。
+    """Run a command from the repo root via the shell on Windows and Linux.
+    With a UNC (WSL) root, cmd refuses to start in a UNC working directory and
+    resets to the Windows dir; build dirs under relative build/ must be drive
+    letters. So we set an explicit local cwd first, then pushd maps the WSL root
+    to a drive letter. Linux just uses the real root directly; python stays the
+    single cross-platform entry so users never map drives by hand.
     """
     print("-> " + full_cmd)
     if os.name == "nt" and ROOT.startswith("\\\\"):
-        # pushd 在同一个 cmd 会话内分配盘符并 cd 过去（WSL 的 \\wsl.localhost
-        # 免凭证，会被映射成盘符路径），随后执行相对 build/ 的工程即落在盘符上。
+        # Give the child cmd an explicit local working directory (system-drive root)
+        # so it never *starts* inside the UNC path (cmd refuses that, prints a
+        # warning and resets to the Windows dir). Then pushd maps the WSL root
+        # to a drive letter; the working directory after pushd is the repo root,
+        # so relative build/ paths still resolve.
+        cwd_arg = os.environ.get("SystemDrive", "C:") + "\\"
         full_cmd = 'pushd "{}" && {}'.format(ROOT, full_cmd)
-        cwd_arg = None            # 让 pushd 决定工作目录
     else:
         cwd_arg = ROOT
-    code = subprocess.call(full_cmd, shell=True, cwd=cwd_arg)
+    # stream Vivado output line-by-line, dropping the command-echo lines.
+    # In batch mode Vivado re-echoes every executed TCL command prefixed
+    # with '#', which is noise. Real output (INFO:/Build OK!/errors) never
+    # starts with '#', so we skip the echo and keep real output.
+    # Reconfigure our own stdout to UTF-8 so Windows 'gbk' consoles don't
+    # crash when printing a byte they can't represent.
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, ValueError):
+        pass
+    proc = subprocess.Popen(full_cmd, shell=True, cwd=cwd_arg,
+                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    for raw in iter(proc.stdout.readline, b""):
+        line = raw.decode("utf-8", "replace").rstrip("\r\n")
+        if not line.lstrip().startswith("#"):
+            print(line)
+    proc.stdout.close()
+    proc.wait()
+    code = proc.returncode
+
     if check and code != 0:
         sys.exit(code)
     return code
 
 
 def base_opts():
-    """Vivado batch 通用参数。"""
+    """Common Vivado batch options."""
     return "-mode batch -nolog -nojournal"
 
 
@@ -146,21 +169,22 @@ def cmd_sim(args):
 
 
 def _ssh(ip, user, passwd, cmd):
-    """在板上执行 shell 命令（sshpass + ssh）。Windows 若无原生 sshpass 则经 WSL 执行。"""
+    """Run a shell command on the board (sshpass + ssh). On Windows, fall back to WSL if no native sshpass."""
     return run_sshless(ip, user, passwd, cmd=cmd, src=None)
 
 def _scp(ip, user, passwd, src, dst):
-    """上传文件到板（sshpass + scp）。Windows 若无原生 sshpass 则经 WSL 执行。"""
+    """Upload a file to the board (sshpass + scp). On Windows, fall back to WSL if no native sshpass."""
     return run_sshless(ip, user, passwd, cmd=None, src=(src, dst))
 
 def run_sshless(ip, user, passwd, cmd=None, src=None):
-    """跨平台 ssh/scp 封装：优先原生 sshpass（Linux），缺失时回退到 WSL 自带 sshpass。
+    """Cross-platform ssh/scp wrapper: prefer native sshpass (Linux), else WSL's sshpass.
 
-    cmd —— ssh 要执行的远端命令；src —— (本地路径, 远端路径) 时改为执行 scp 上传。
-    Linux/WSL 直接跑；Windows 上 sshpass 属 Linux 工具，统一经 wsl.exe 转发
-    （本机 WSL 已装 sshpass/scp/ssh），避免 Windows 无原生 sshpass 时找不到工具。
+    cmd - remote command for ssh; src - (local_path, remote_path) switches to an scp upload.
+    Linux/WSL run directly; on Windows sshpass is a Linux tool and is routed
+    through wsl.exe (this WSL ships sshpass/scp/ssh), so we never rely on a
+    native Windows sshpass.
     """
-    # Windows 上就算 PATH 里有直呼 sshpass 也建议走 WSL；Linux 原生直接跑最稳。
+    # On Windows prefer WSL even if sshpass is on PATH; Linux native direct is most reliable.
     if os.name != "nt" and shutil.which("sshpass"):
         if src:
             argv = ["sshpass", "-p", passwd, "scp",
@@ -173,10 +197,10 @@ def run_sshless(ip, user, passwd, cmd=None, src=None):
                     "-o", "UserKnownHostsFile=/dev/null",
                     f"{user}@{ip}", cmd]
         return subprocess.run(argv)
-    # Windows(或缺 sshpass)：走 WSL（其 PATH 内已有 sshpass/scp/ssh）
+    # Windows (or missing sshpass): route via WSL (its PATH already has sshpass/scp/ssh)
     opts = "-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
     if src:
-        # 把本地 Windows 路径转成 WSL 可读的 /mnt/c/... 路径交给 scp
+        # Convert a local Windows path to a WSL-readable /mnt/c/... path for scp
         w = src[0].replace(":", "").replace("\\", "/")
         w = "/mnt/" + w[0].lower() + w[1:]
         line = f"sshpass -p {passwd} scp {opts} {w} {user}@{ip}:{src[1]}"
@@ -185,53 +209,53 @@ def run_sshless(ip, user, passwd, cmd=None, src=None):
     return subprocess.run(["wsl.exe", "-d", "Ubuntu-24.04", "--", "bash", "-lc", line])
 
 def _shq(s):
-    """Shell 单引号包裹远端命令，避免 Windows→WSL 多层转义破坏空格/花括号。"""
+    """Wrap the remote command in single quotes so Windows->WSL escaping can't break spaces/braces."""
     return "'" + s.replace("'", "'\\''") + "'"
 
 
 def find_bit(top):
-    """跟 program_fpga.tcl 相同的路径约定，定位 <top>.bit。"""
+    """Locate <top>.bit using the same path convention as program_fpga.tcl."""
     candidates = [os.path.join(BUILD, "bin", f"{top}.bit")] \
         + sorted(glob.glob(os.path.join(BUILD, f"{top}_prj", "*", "impl_1", f"{top}.bit")))
     for c in candidates:
         if os.path.isfile(c):
             return c
-    raise SystemExit(f"[error] 未找到 {top}.bit，请先: python scripts/fpga.py build --top {top}")
+    raise SystemExit(f"[error] {top}.bit not found; run first: python scripts/fpga.py build --top {top}")
 
 
 def _bitstream_start(data):
-    """返回 .bit 中 bitstream 数据区（同步字之前）的偏移。
-    Vivado .bit = 文本头(design/part/date/e 长度字段) 之后跟着的 bitstream，
-    其中含 7-series 同步字 AA995566。同步字是配置数据真正开始的标志，
-    据此定位数据区可免受各 Vivado 版本头部字段差异影响。"""
-    for i in range(0, 3):   # 容忍开头少量 padding
+    """Return the offset of the bitstream data region in the .bit (before the sync word).
+    A Vivado .bit is a text header (design/part/date/e length fields) followed by the bitstream,
+    which contains the 7-series sync word AA995566, marking where the config data really begins,
+    so locating the data region this way is robust across Vivado header differences."""
+    for i in range(0, 3):   # tolerate a little leading padding
         for off in range(0, 8):
             p = off
             while p < len(data) - 4:
                 if data[p] == 0xAA and data[p + 3] == 0x66:
                     if data[p + 1] == 0x99 and data[p + 2] == 0x55:
-                        # 确认 0xAA 0x99 0x55 0x66 大端同步字
+                        # confirm the big-endian 0xAA 0x99 0x55 0x66 sync word
                         return p
                 p += 4
     raise ValueError(f"sync word (AA995566) not found in .bit (len={len(data)})")
 
 
 def _bit_to_bin(bit):
-    """把 Vivado .bit 无损转成 Zynq fpga_manager 可加载的 byte-swapped .bin。
+    """Losslessly convert a Vivado .bit into a byte-swapped .bin loadable by the Zynq fpga_manager.
 
-    依据 a) 内核 zynq-fpga 驱动(zovn-fpga.c)注释明确：
-        “Bitstream must be a byte swapped .bin file”，并在每个 4 字节边界找
-        sync 字 66 55 99 AA；b) Xilinx 官方用 bootgen -process_bitstream bin
-        转出的正是“每 32-bit 字做字节交换”的原始配置流。
-    因此本函数用纯 Python 完成字节交换，无需任何外部 bootgen/系统工具，
-    Windows/Linux/WSL 跨平台一致，产物与 bootgen 输出字节级一致(已实测比对)。
+    Based on a) the kernel zynq-fpga driver (zynq-fpga.c) comment:
+        "Bitstream must be a byte swapped .bin file", and it looks at every 4-byte boundary for
+        the sync word 66 55 99 AA; b) Xilinx bootgen -process_bitstream bin yields
+        exactly this byte-swapped-per-32-bit-word raw config stream.
+    So this function does the byte swap in pure Python - no bootgen or external tools -
+    consistent across Windows/Linux/WSL, byte-identical to bootgen output (verified).
     """
     with open(bit, "rb") as f:
         data = f.read()
     start = _bitstream_start(data)
-    # 交换每个 32-bit 字的字节序：AA 99 55 66 -> 66 55 99 AA（fpga_manager 要求）
+    # Byte-swap each 32-bit word: AA 99 55 66 -> 66 55 99 AA (fpga_manager requirement)
     body = bytes(data[start:])
-    # 确保 4 字节对齐（驱动要求 DMA 长度 %4==0）
+    # Ensure 4-byte alignment (driver needs DMA length %%4==0)
     if len(body) % 4:
         body = body[: len(body) - (len(body) % 4)]
     swapped = b"".join(body[i:i + 4][::-1] for i in range(0, len(body), 4))
@@ -239,42 +263,43 @@ def _bit_to_bin(bit):
     out = os.path.join(work, os.path.splitext(os.path.basename(bit))[0] + ".bin")
     with open(out, "wb") as f:
         f.write(swapped)
-    print(f"  -> 转换 .bit → byte-swapped .bin (pure-python) : {out} ({len(swapped)} B)")
+    print(f"  -> converted .bit -> byte-swapped .bin (pure-python): {out} ({len(swapped)} B)")
     return out
 
 
 def cmd_load(args):
-    """运行时重配 PL：bit→bin → scp 上传 → fpga_manager firmware。不改 BOOT.BIN。"""
+    """Runtime-reload PL: bit->bin, scp upload, fpga_manager firmware. Does not touch BOOT.BIN."""
     ip = args.ip or "10.10.10.93"
     user = args.user or "root"
     passwd = args.passwd or "root"
 
     if not args.top:
-        raise SystemExit("[error] load 需提供 --top <proj>（自动由 build 产物 .bit 转换并加载）")
+        raise SystemExit("[error] load requires --top <proj> (converted & loaded from the build .bit)")
     bit = find_bit(args.top)
     print(f"  bit   : {bit}")
     bin_file = _bit_to_bin(bit)
     print(f"  bin   : {bin_file}")
 
     fw = f"fpga_{int(time.time())}.bin"
-    print(f"  上传  : {os.path.basename(bin_file)} -> {ip}:/lib/firmware/{fw}")
+    print(f"  upload : {os.path.basename(bin_file)} -> {ip}:/lib/firmware/{fw}")
     if _scp(ip, user, passwd, bin_file, f"/tmp/{fw}").returncode != 0:
-        raise SystemExit("[error] scp 上传失败")
+        raise SystemExit("[error] scp upload failed")
     cmd = (f"mkdir -p /lib/firmware; cp /tmp/{fw} /lib/firmware/{fw}; "
-           f"echo 加载前=$(cat /sys/class/fpga_manager/fpga0/state 2>/dev/null); "
+           f"echo before=$(cat /sys/class/fpga_manager/fpga0/state 2>/dev/null); "
            f"echo {fw} > /sys/class/fpga_manager/fpga0/firmware; "
            f"sleep 1; "
-           f"echo 加载后=$(cat /sys/class/fpga_manager/fpga0/state 2>/dev/null)")
+           f"echo after=$(cat /sys/class/fpga_manager/fpga0/state 2>/dev/null)")
     p = _ssh(ip, user, passwd, cmd)
     if p.returncode != 0:
-        raise SystemExit(f"[error] ssh 执行失败(rc={p.returncode})")
-    # 整系统 bit 内含 PS 网络（以太走 MIO），加载后网络应保持；再 ssh 一次确认存活
+        raise SystemExit(f"[error] ssh execution failed (rc={p.returncode})")
+    # The full-system bit includes PS networking (ETH over MIO), so the link should
+    # survive; ssh again to confirm the board is still alive
     alive = _ssh(ip, user, passwd, "echo alive").returncode == 0
     if alive:
-        print("==> PL 已运行时重配（BOOT.BIN 未动），板子网络保持（整系统 bit 含 PS）。")
-        print("    板子 LED 应由新 bit 驱动。")
+        print("==> PL runtime-reconfigured (BOOT.BIN untouched); board network stays up (PS in bit).")
+        print("    Board LEDs should now be driven by the new bit.")
     else:
-        print("==> PL 已重配，但加载后 SSH 失联——此 bit 不含 PS 网络，需重启回 BOOT.BIN 内嵌 bit。")
+        print("==> PL reloaded, but SSH is gone - this bit has no PS network; reboot to use the BOOT.BIN bit.")
 
 
 def cmd_clean(args):
@@ -305,7 +330,7 @@ def main():
     pc = sub.add_parser("clean", help="clean build/ artifacts")
     pc.set_defaults(func=cmd_clean)
 
-    pl = sub.add_parser("load", help="runtime-reload PL: bit->bin, upload, fpga_manager (不重打包 BOOT.BIN)")
+    pl = sub.add_parser("load", help="runtime-reload PL: bit->bin, upload, fpga_manager (does not repack BOOT.BIN)")
     pl.add_argument("--top", help="project folder name under projects/")
     pl.add_argument("--ip", help="board IP (default 10.10.10.93)")
     pl.add_argument("--user", help="ssh user (default root)")
