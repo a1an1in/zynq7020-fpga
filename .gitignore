@@ -3,7 +3,7 @@
 *.log
 *.wdb
 *.backup.*
-*.str
+*.st
 *.dcp
 *.bit
 *.bin
@@ -42,7 +42,7 @@ ps7_summary.html
 # build/ 由 scripts/create_project.tcl 从源码重建，Windows 与 Linux 各建各的，
 # 不互相复制（.xpr 里记录的是生成机器的绝对路径，跨平台不可用）。
 /build/
-*.xpr
+*.xp
 *.xsa
 *.hdf
 
@@ -50,6 +50,7 @@ ps7_summary.html
 *.mem
 *.vcd
 *.fsdb
+*.vvp
 
 # Vivado IP 备份
 *.vh.bak

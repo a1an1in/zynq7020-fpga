@@ -1,4 +1,6 @@
 # 统一源码行尾为 LF，避免 Windows(CRLF) 与 Linux(LF) 之间的提交差异
+# 兜底：仓库整体统一 LF（后续按后缀/二进制行显式覆盖）
+* text=auto eol=lf
 *.tcl    text eol=lf
 *.py     text eol=lf
 *.v      text eol=lf
@@ -8,6 +10,16 @@
 *.xdc    text eol=lf
 *.xci    text eol=lf
 *.md     text eol=lf
+*.json   text eol=lf
+*.h      text eol=lf
+*.hpp    text eol=lf
+*.cpp    text eol=lf
+*.c      text eol=lf
+*.sh     text eol=lf
+*.yml    text eol=lf
+*.yaml   text eol=lf
+*.txt    text eol=lf
+Makefile text eol=lf
 .gitignore text eol=lf
 
 # 二进制/大文件不进行尾处理 (通常配合 Git LFS)
