@@ -3,7 +3,7 @@
 `ifndef AURORA_ADDR_DEF_INC
 `define AURORA_ADDR_DEF_INC
 //---- P-BUS 场窗 ----
-`define AURORA_BASE     32'h43C10000
+`define AURORA_BASE     32'h50000000
 `define AURORA_WINDOW   32'h00010000
 `define AURORA_VERSION  32'h00000001
 //---- system ----

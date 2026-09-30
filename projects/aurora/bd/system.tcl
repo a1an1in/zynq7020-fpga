@@ -196,7 +196,7 @@ proc create_root_design { parentCell } {
 
   # 单窗口: 把 PS M_AXI_GP0 经互联引出为外部 AXI4-Lite 主接口 M00_AXI，
   # 它在顶层 system_wrapper 上表现为 M00_AXI_* 端口，由 projects/aurora/src/
-  # 的 aurora_regbank (自研寄存器组) 直接挂接，独占 0x43C10000 窗口。
+  # 的 aurora_regbank (自研寄存器组) 直接挂接，独占 0x50000000 窗口。
   set M00_AXI [ create_bd_intf_port -mode Master -vlnv xilinx.com:interface:aximm_rtl:1.0 M00_AXI ]
   set_property -dict [ list \
    CONFIG.PROTOCOL {AXI4LITE} \
@@ -1054,7 +1054,7 @@ Flash#Quad SPI Flash#GPIO#Quad SPI Flash#SD 1#SD 1#SD 1#SD 1#SD 1#SD 1#SD\
   connect_bd_net -net rst_ps7_0_100M_peripheral_aresetn [get_bd_pins ps7_0_axi_periph/ARESETN] [get_bd_pins ps7_0_axi_periph/M00_ARESETN] [get_bd_pins ps7_0_axi_periph/S00_ARESETN] [get_bd_pins rst_ps7_0_100M/peripheral_aresetn] 
 
   # Create address segments
-  assign_bd_address -offset 0x43C10000 -range 0x00010000 -target_address_space [get_bd_addr_spaces processing_system7_0/Data] [get_bd_addr_segs M00_AXI] -force
+  assign_bd_address -offset 0x50000000 -range 0x00010000 -target_address_space [get_bd_addr_spaces processing_system7_0/Data] [get_bd_addr_segs M00_AXI/Reg] -force
 
 
   # Restore current instance

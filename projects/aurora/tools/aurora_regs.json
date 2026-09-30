@@ -1,7 +1,7 @@
 {
   "_comment": "aurora 寄存器映射 · 单一真源 (single source of truth). 手工不可改 .vh/.h, 一律改本文件后重跑 tools/gen_regs.py。地址分块: SYSTEM/LED 实现, ADC 预留。窗内偏址为字节地址; 绝对地址 = BASE + 偏址。",
   "name":       "aurora",
-  "base":       "0x43C10000",
+  "base":       "0x50000000",
   "size":       "0x10000",
   "version":    "0x00000001",
 

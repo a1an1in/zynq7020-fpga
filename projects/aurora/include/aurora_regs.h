@@ -3,7 +3,7 @@
 #ifndef AURORA_REGS_H
 #define AURORA_REGS_H
 
-#define AURORA_BASE        0x43C10000    /* 窗内绝对基址 */
+#define AURORA_BASE        0x50000000    /* 窗内绝对基址 */
 #define AURORA_WINDOW_SIZE 0x00010000u    /* 单窗口映射尺寸 */
 #define AURORA_VERSION     0x00000001u
 

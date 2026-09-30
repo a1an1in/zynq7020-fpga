@@ -3,7 +3,7 @@
  *
  * 结构：
  *   system_wrapper (PS: DDR/FIXED_IO/以太, M_AXI_GP0)
- *        │  M00_AXI_*  (BD 引出的外部 AXI4-Lite 主接口, 0x43C10000 唯一窗口)
+ *        │  M00_AXI_*  (BD 引出的外部 AXI4-Lite 主接口, 0x50000000 唯一窗口)
  *        ▼
  *   aurora_regbank    (手写固定 = 纯 AXI4-Lite 从 + P-BUS 广播/读回, 32bit,
  *                       零外设业务、不认识块；寄存器从器在 src/regs/ 由工具生成)
@@ -115,8 +115,8 @@ module aurora_top (
         .FIXED_IO_ps_clk  (FIXED_IO_ps_clk),
         .FIXED_IO_ps_porb (FIXED_IO_ps_porb),
         .FIXED_IO_ps_srstb(FIXED_IO_ps_srstb),
-        .fclk_clk0        (fclk_clk0),
-        .fclk_reset0_n    (fclk_reset0_n),
+        .FCLK_CLK0        (fclk_clk0),
+        .FCLK_RESET0_N    (fclk_reset0_n),
         .M00_AXI_awaddr   (m00_awaddr),
         .M00_AXI_awprot   (m00_awprot),
         .M00_AXI_awvalid  (m00_awvalid),
