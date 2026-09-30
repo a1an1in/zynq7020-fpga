@@ -115,10 +115,13 @@ python scripts/fpga.py build --top aurora
 # 仿真验证（先 build）
 python scripts/fpga.py sim   --top run_led
 
-# 接板烧写（先 build）
+# jtag烧写开发板（先 build）
 python scripts/fpga.py program --top run_led
 
-# 运行时重配 PL（不重打包 BOOT.bin；需板上已起 Linux 且主机可 SSH）
+# 拷贝PL到Linux 文件系统里面的firmware， 重启失效（不重打包 BOOT.bin；需板上已起 Linux 且主机可 SSH）
+python scripts/fpga.py debug --top aurora --ip 10.10.10.110 --user root --passwd root
+
+# 替换SD里面的PL，重启后还是有效（不重打包 BOOT.bin；替换sd卡上的boot）
 python scripts/fpga.py load --top aurora --ip 10.10.10.110 --user root --passwd root
 
 # 全部洗掉重来

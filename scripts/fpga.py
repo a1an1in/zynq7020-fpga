@@ -8,6 +8,8 @@ Usage (same from Windows cmd/PowerShell and Linux):
     python scripts/fpga.py program --top <proj>    # program board: write bit via Hardware Manager
     python scripts/fpga.py sim     --top <proj>    # simulate (needs a testbench under the project)
     python scripts/fpga.py clean                   # remove build/ artifacts
+    python scripts/fpga.py debug   --top <proj>    # runtime-reload PL (fpga_manager); NOT persistent, reverts on reboot
+    python scripts/fpga.py load    --top <proj>    # PERSIST bit: replace SD boot-partition system.bit so u-boot loads it on reboot
 
 Notes:
     - No shell dependence; safe and cross-platform.
@@ -197,16 +199,31 @@ def run_sshless(ip, user, passwd, cmd=None, src=None):
                     "-o", "UserKnownHostsFile=/dev/null",
                     f"{user}@{ip}", cmd]
         return subprocess.run(argv)
-    # Windows (or missing sshpass): route via WSL (its PATH already has sshpass/scp/ssh)
-    opts = "-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
+    # Windows (or missing sshpass): route via WSL (its PATH already has sshpass/scp/ssh).
+    # IMPORTANT: pass sshpass/ssh as direct argv through wsl.exe, NOT via 'bash -lc', so the
+    # remote command string is never re-interpreted by a host shell (which would eagerly expand
+    # $(), $B, `cmd` etc. and corrupt the payload the board is meant to run).
+    opts = ["-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null"]
+    argv = ["wsl.exe", "-d", "Ubuntu-24.04", "--"]
     if src:
-        # Convert a local Windows path to a WSL-readable /mnt/c/... path for scp
-        w = src[0].replace(":", "").replace("\\", "/")
-        w = "/mnt/" + w[0].lower() + w[1:]
-        line = f"sshpass -p {passwd} scp {opts} {w} {user}@{ip}:{src[1]}"
+        local = src[0]
+        if (local.upper().startswith("\\\\WSL.LOCALHOST\\")
+                or local.upper().startswith("\\\\WSL$\\")
+                or "WSL.LOCALHOST" in local.upper()):
+            # Case A: the file already lives on the WSL filesystem and VS Code handed it to us
+            # as a UNC (\\wsl.localhost\<Distro>\home\...) or \\wsl$\<Distro>\... path.
+            # Strip the \\wsl.localhost\<Distro>\ prefix -> native POSIX /home/alan/... (the
+            # helper runs inside this same distro, so /home/alan/... is valid and needs no /mnt).
+            toks = local.replace("\\", "/").lstrip("/").split("/")
+            w = "/" + "/".join(toks[2:])          # drop ['wsl.localhost', '<Distro>']
+        else:
+            # Case B: native Windows drive path C:\... -> /mnt/c/...
+            w = local.replace(":", "").replace("\\", "/")
+            w = "/mnt/" + w[0].lower() + w[1:]
+        argv += ["sshpass", "-p", passwd, "scp"] + opts + [w, f"{user}@{ip}:{src[1]}"]
     else:
-        line = f"sshpass -p {passwd} ssh {opts} {user}@{ip} {_shq(cmd)}"
-    return subprocess.run(["wsl.exe", "-d", "Ubuntu-24.04", "--", "bash", "-lc", line])
+        argv += ["sshpass", "-p", passwd, "ssh"] + opts + [f"{user}@{ip}", cmd]
+    return subprocess.run(argv)
 
 def _shq(s):
     """Wrap the remote command in single quotes so Windows->WSL escaping can't break spaces/braces."""
@@ -267,14 +284,16 @@ def _bit_to_bin(bit):
     return out
 
 
-def cmd_load(args):
-    """Runtime-reload PL: bit->bin, scp upload, fpga_manager firmware. Does not touch BOOT.BIN."""
+def cmd_debug(args):
+    """DEBUG command (former 'load'): runtime-reload PL via fpga_manager (bit->bin, upload, write
+    firmware). Never persistent - any reboot reverts to the boot bit. For persistence across reboots
+    use the new 'load' command (replaces SD boot-partition system.bit for u-boot)."""
     ip = args.ip or "10.10.10.93"
     user = args.user or "root"
     passwd = args.passwd or "root"
 
     if not args.top:
-        raise SystemExit("[error] load requires --top <proj> (converted & loaded from the build .bit)")
+        raise SystemExit("[error] debug requires --top <proj> (converted & loaded from the build .bit)")
     bit = find_bit(args.top)
     print(f"  bit   : {bit}")
     bin_file = _bit_to_bin(bit)
@@ -300,6 +319,51 @@ def cmd_load(args):
         print("    Board LEDs should now be driven by the new bit.")
     else:
         print("==> PL reloaded, but SSH is gone - this bit has no PS network; reboot to use the BOOT.BIN bit.")
+
+
+def cmd_load(args):
+    """PERSIST the bit: upload the raw .bit to the board and atomically replace the SD boot
+    partition's system.bit (with a .bak backup). On the next boot u-boot (uEnv.txt uenvcmd
+    'fatload system.bit ; fpga loadb ...') will fetch THIS bit from the card instead of the
+    one baked into BOOT.BIN. Does not touch BOOT.BIN and does not affect the running PL now;
+    run 'debug' to activate immediately, or reboot to have u-boot load it.
+    """
+    ip = args.ip or "10.10.10.93"
+    user = args.user or "root"
+    passwd = args.passwd or "root"
+
+    if not args.top:
+        raise SystemExit("[error] load requires --top <proj> (raw .bit is written to the SD boot partition)")
+    bit = find_bit(args.top)
+    persist_sh = os.path.join(SCRIPTS, "fpga_persist.sh")
+    print(f"  bit   : {bit}  ({os.path.getsize(bit)} B)")
+    print(f"  upload: {os.path.basename(bit)} -> {ip}:/tmp/system_new.bit")
+    if _scp(ip, user, passwd, bit, "/tmp/system_new.bit").returncode != 0:
+        raise SystemExit("[error] scp upload failed")
+    print(f"  upload: fpga_persist.sh -> {ip}:/tmp/fpga_persist.sh")
+    # Sanitize line endings: the checked-out file may be CRLF (Windows tooling), which breaks
+    # the POSIX script ('set -u' fails with a stray ^M). Scp a CR-stripped LF copy instead.
+    _tmpdir = tempfile.mkdtemp(prefix="fpga_persist_")
+    _localsh = os.path.join(_tmpdir, "fpga_persist.sh")
+    with open(persist_sh, "rb") as _f:
+        _data = _f.read().replace(b"\r\n", b"\n").replace(b"\r", b"\n")
+    with open(_localsh, "wb") as _f:
+        _f.write(_data)
+    if _scp(ip, user, passwd, _localsh, "/tmp/fpga_persist.sh").returncode != 0:
+        raise SystemExit("[error] scp upload of persist script failed")
+
+    # Keep the remote payload free of $, () and backticks: Windows->WSL->ssh->board quoting is
+    # fragile, so the real logic lives in the shell script we just uploaded; here we only invoke it.
+    mnt = (args.mnt or "").replace("'", "")
+    remote = f"sh /tmp/fpga_persist.sh '{mnt}'"
+    p = _ssh(ip, user, passwd, remote)
+    if p.returncode != 0:
+        raise SystemExit(f"[error] ssh execution failed (rc={p.returncode})")
+
+    print("\n==> system.bit replaced on the SD boot partition.")
+    print("    Reboot now: u-boot runs uEnv.txt's 'fpga loadb' and will pull THIS bit from the card.")
+    print("    This persists only if your u-boot has the 'fpga' command (CONFIG_CMD_FPGA) enabled.")
+    print("    Verify after reboot: fpga read 0x4 should return, and /dev/uio0 should exist.")
 
 
 def cmd_clean(args):
@@ -330,11 +394,19 @@ def main():
     pc = sub.add_parser("clean", help="clean build/ artifacts")
     pc.set_defaults(func=cmd_clean)
 
-    pl = sub.add_parser("load", help="runtime-reload PL: bit->bin, upload, fpga_manager (does not repack BOOT.BIN)")
+    pd = sub.add_parser("debug", help="runtime-reload PL for DEBUG/testing: bit->bin, fpga_manager (NOT persistent; reverts on reboot)")
+    pd.add_argument("--top", help="project folder name under projects/")
+    pd.add_argument("--ip", help="board IP (default 10.10.10.93)")
+    pd.add_argument("--user", help="ssh user (default root)")
+    pd.add_argument("--passwd", help="ssh password (default root)")
+    pd.set_defaults(func=cmd_debug)
+
+    pl = sub.add_parser("load", help="PERSIST bit: replace SD boot-partition system.bit so u-boot loads it from the card on reboot")
     pl.add_argument("--top", help="project folder name under projects/")
     pl.add_argument("--ip", help="board IP (default 10.10.10.93)")
     pl.add_argument("--user", help="ssh user (default root)")
     pl.add_argument("--passwd", help="ssh password (default root)")
+    pl.add_argument("--mnt", help="SD boot partition mountpoint on board (default: autodetect)")
     pl.set_defaults(func=cmd_load)
 
     args = p.parse_args()
