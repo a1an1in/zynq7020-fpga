@@ -3,7 +3,7 @@
 `ifndef AURORA_ADDR_DEF_INC
 `define AURORA_ADDR_DEF_INC
 //---- P-BUS 场窗 ----
-`define AURORA_BASE     32'h50000000
+`define AURORA_BASE     32'h40000000
 `define AURORA_WINDOW   32'h00010000
 `define AURORA_VERSION  32'h00000001
 //---- system ----
@@ -33,4 +33,13 @@
 `define AURORA_ADC_STATUS_RST 32'h00000000   // ro 复位值
 `define AURORA_ADC_DATA     32'h00000028   // ro 预留: 采样数据
 `define AURORA_ADC_DATA_RST 32'h00000000   // ro 复位值
+//---- dma ----
+`define AURORA_DMA_BASE 32'h00000030
+`define AURORA_DMA_SIZE 32'h00000010
+`define AURORA_DMA_CTRL     32'h00000030   // rw bit0=RUN(写1启动假数据源发一帧, 自动清) 其余保留
+`define AURORA_DMA_CTRL_RST 32'h00000000   // rw 复位值
+`define AURORA_DMA_LEN     32'h00000034   // rw 每帧字数(32bit 字, 默认1024); 与 PS 侧 DMA BTT(=len*4) 保持一致
+`define AURORA_DMA_LEN_RST 32'h00000400   // rw 复位值
+`define AURORA_DMA_STATUS     32'h00000038   // ro [0]busy [1]帧结束(新RUN清) [15:8]已发帧数(回绕)
+`define AURORA_DMA_STATUS_RST 32'h00000000   // ro 复位值
 `endif // AURORA_ADDR_DEF_INC

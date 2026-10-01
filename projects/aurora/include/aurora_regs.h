@@ -3,7 +3,7 @@
 #ifndef AURORA_REGS_H
 #define AURORA_REGS_H
 
-#define AURORA_BASE        0x50000000    /* 窗内绝对基址 */
+#define AURORA_BASE        0x40000000    /* 窗内绝对基址 */
 #define AURORA_WINDOW_SIZE 0x00010000u    /* 单窗口映射尺寸 */
 #define AURORA_VERSION     0x00000001u
 
@@ -34,5 +34,14 @@
 #define AURORA_ADC_STATUS_RST 0x00000000u  /* ro: 复位值 */
 #define AURORA_ADC_DATA    0x0028u  /* ro: 预留: 采样数据 */
 #define AURORA_ADC_DATA_RST 0x00000000u  /* ro: 复位值 */
+/*---- dma ----*/
+#define AURORA_DMA_BASE 0x0030u
+#define AURORA_DMA_SIZE 0x0010u
+#define AURORA_DMA_CTRL    0x0030u  /* rw: bit0=RUN(写1启动假数据源发一帧, 自动清) 其余保留 */
+#define AURORA_DMA_CTRL_RST 0x00000000u  /* rw: 复位值 */
+#define AURORA_DMA_LEN    0x0034u  /* rw: 每帧字数(32bit 字, 默认1024); 与 PS 侧 DMA BTT(=len*4) 保持一致 */
+#define AURORA_DMA_LEN_RST 0x00000400u  /* rw: 复位值 */
+#define AURORA_DMA_STATUS    0x0038u  /* ro: [0]busy [1]帧结束(新RUN清) [15:8]已发帧数(回绕) */
+#define AURORA_DMA_STATUS_RST 0x00000000u  /* ro: 复位值 */
 
 #endif /* AURORA_REGS_H */

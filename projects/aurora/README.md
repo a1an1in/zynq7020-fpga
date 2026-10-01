@@ -5,8 +5,8 @@ PS 通过**单一 AXI4-Lite 从机**（一个窗口 · 地址分块 · 一次 mm
 本版先落地 **LED**；全表一次 mmap 为将来 UIO/驱动做铺垫。
 
 ## 架构（定稿：生成从器 + 手写 bank/top/tb）
-- **单 AXI4-Lite 从窗口**固定占 PS `0x5000_0000`（64KB）。窗内按块分址：
-  `SYSTEM`(0x00) / `LED`(0x10) / `ADC`(0x20·预留)。
+- **单 AXI4-Lite 从窗口**固定占 PS `0x4000_0000`（64KB）。窗内按块分址：
+  `SYSTEM`(0x00) / `LED`(0x10) / `ADC`(0x20·预留) / `DMA`(0x30·假数据源)。
 - PS `M_AXI_GP0` → BD 内 `axi_interconnect` → 外部主接口 `M00_AXI` → 顶层 `aurora_top.v`
   接到自研寄存器组 `aurora_regbank`。
 - **寄存器映射单一真源** `tools/aurora_regs.json` → 生成器 `tools/gen_regs.py` 一次产出
@@ -40,11 +40,14 @@ projects/aurora/
 ├─ src/aurora_top.v            # 顶层：bank + 从器 + OR 归并 + LED 外设
 ├─ src/aurora_regbank.v        # 手写：纯 AXI4-Lite 从 + P-BUS 读写广播
 ├─ src/aurora_led.v            # LED 外设模块
+├─ src/aurora_dma_src.v        # 假数据源（S2MM AXI-Stream 帧发生器，PL->PS）
+├─ src/aurora_dma_sink.v       # MM2S 接收器（回环/丢弃，回环预留）
 ├─ src/regs/                   # 生成：每块一个自命中从器
 │   ├─ aurora_system_regs.v    #   SYSTEM（SCRATCH/VERSION/CTRL）
 │   ├─ aurora_led_regs.v       #   LED（VALUE/CTRL/STATUS）
-│   └─ aurora_adc_regs.v       #   ADC（预留占位，读恒 0）
-├─ bd/system.tcl               # BD 脚本（PS+互联 → 外部 M00_AXI）
+│   ├─ aurora_adc_regs.v       #   ADC（预留占位，读恒 0）
+│   └─ aurora_dma_regs.v       #   DMA（CTRL/LEN/STATUS 假数据源控制）
+├─ bd/system.tcl               # BD 脚本（PS+互联+AXI DMA+HP0 → 外部 M00_AXI + 流口）
 ├─ constraints/                # aurora_pin.xdc + config.xdc
 ├─ tb/tb_aurora_regbank.v      # 功能自检 + 隔离监控（iverilog，13 项全过）
 ├─ include/aurora_regs.h       # 生成：ARM 侧宏
@@ -72,7 +75,7 @@ vvp tb.vvp                            # 期望：RESULT: 13 passed, 0 failed
 ```
 `tb.vvp` 为仿真生成物，已被 `.gitignore`（`*.vvp`）忽略，不入库。
 
-## 寄存器表（窗内字节偏址，绝对地址 = 0x50000000 + 偏址）
+## 寄存器表（窗内字节偏址，绝对地址 = 0x40000000 + 偏址）
 | 块   | 寄存器 | 偏址 | 属性 | 说明 |
 |------|--------|------|------|------|
 |system| SCRATCH | 0x00 | RW | 通用读写测试寄存器 |
@@ -82,10 +85,23 @@ vvp tb.vvp                            # 期望：RESULT: 13 passed, 0 failed
 |led   | CTRL    | 0x14 | RW | bit0 使能（0 全灭 / 1 按 VALUE 点亮） |
 |led   | STATUS  | 0x18 | RO | [4]使能 [3:0]实际 LED 输出 |
 |adc   | CTRL/STATUS/DATA | 0x20/… | RW/RO | 预留，读回 0（本版不实现） |
+|dma   | CTRL   | 0x30 | RW | bit0=RUN 启动假数据源发一帧（写 1 自动清） |
+|dma   | LEN    | 0x34 | RW | 每帧字数（默认 1024），与 PS 侧 DMA BTT=len*4 一致 |
+|dma   | STATUS | 0x38 | RO | [0]busy [1]帧完成 [15:8]已发帧数 |
+
+## DMA 通路（PL→PS 假数据 S2MM，MM2S 回环预留）
+- **控制**：dma 寄存器块在单窗 `0x40000000+0x30`（经既有 M00/regbank 通路，一次 mmap 即可写
+  `DMA_CTRL[0]=1` 启动、读 `DMA_STATUS`）。
+- **数据**：`aurora_dma_src` 发确定性帧 `{16'h5AA5, word_index}` → BD `S_AXIS_S2MM` →
+  `axi_dma_0`(SG 模式, 64bit) → `hp0_axi_periph` → PS `S_AXI_HP0`(0x0–0x40000000 DDR)。
+- **AXI DMA 引擎**（`0x50000000`，SG/MM2S/S2MM）由 PS 经 GP0 的 BD 内部 M01 控制
+  （dmaengine 驱动写描述符环）；假数据源仅负责"喂流"，两者异步配合。
+- **验证点位**：PS 读回 DDR 相应区，应得到连续 `0x5AA5xxxx` 序列；`DMA_STATUS` 的 busy/帧计数
+  反映源侧进度。**MM2S** 现已连出（`M_AXIS_MM2S`），顶层用 `aurora_dma_sink` 丢弃接收，为回环铺路。
 
 ## 快速点亮四个 LED（ARM 侧）
 ```c
-#define AURORA_BASE 0x50000000u
+#define AURORA_BASE 0x40000000u
 *(volatile uint32_t*)(AURORA_BASE + AURORA_LED_VALUE) = 0x0A; // LED1+LED3
 *(volatile uint32_t*)(AURORA_BASE + AURORA_LED_CTRL)  = 0x1;  // 使能
 ```
@@ -98,8 +114,8 @@ vvp tb.vvp                            # 期望：RESULT: 13 passed, 0 failed
 ## 备注 / 可能踩的坑
 - BD 外部 AXI 接口若 IPI 要求 `M00_AXI_aclk/M00_AXI_aresetn` 连网，请在 `bd/system.tcl`
   里把两个 pin 连到 `FCLK_CLK0` / `rst_ps7_0_100M/peripheral_aresetn`。
-- 地址编辑器未自动出现 `0x50000000` 时，用 Address Editor 对 `M00_AXI` 从段指定基址
-  `0x50000000`、范围 `0x10000`。脚本内 `assign_bd_address` 的**从段目标对象必须写成
+- 地址编辑器未自动出现 `0x40000000` 时，用 Address Editor 对 `M00_AXI` 从段指定基址
+  `0x40000000`、范围 `0x10000`。脚本内 `assign_bd_address` 的**从段目标对象必须写成
   `[get_bd_addr_segs M00_AXI/Reg]`**——写成裸 `M00_AXI` 会因外部主端口无从段而直接
   在 `source bd/system.tcl` 时抛 `[BD 5-432 / Common 17-39] assign_bd_address` 失败。
 - 顶层例化 `system_wrapper` 时端口名区分大小写：PS 的 `FCLK_CLK0` / `FCLK_RESET0_N`

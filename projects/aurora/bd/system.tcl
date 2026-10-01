@@ -196,7 +196,7 @@ proc create_root_design { parentCell } {
 
   # 单窗口: 把 PS M_AXI_GP0 经互联引出为外部 AXI4-Lite 主接口 M00_AXI，
   # 它在顶层 system_wrapper 上表现为 M00_AXI_* 端口，由 projects/aurora/src/
-  # 的 aurora_regbank (自研寄存器组) 直接挂接，独占 0x50000000 窗口。
+  # 的 aurora_regbank (自研寄存器组) 直接挂接，独占 0x40000000 窗口。
   set M00_AXI [ create_bd_intf_port -mode Master -vlnv xilinx.com:interface:aximm_rtl:1.0 M00_AXI ]
   set_property -dict [ list \
    CONFIG.PROTOCOL {AXI4LITE} \
@@ -1018,7 +1018,7 @@ Flash#Quad SPI Flash#GPIO#Quad SPI Flash#SD 1#SD 1#SD 1#SD 1#SD 1#SD 1#SD\
    CONFIG.PCW_USE_S_AXI_ACP {0} \
    CONFIG.PCW_USE_S_AXI_GP0 {0} \
    CONFIG.PCW_USE_S_AXI_GP1 {0} \
-   CONFIG.PCW_USE_S_AXI_HP0 {0} \
+   CONFIG.PCW_USE_S_AXI_HP0 {1} \
    CONFIG.PCW_USE_S_AXI_HP1 {0} \
    CONFIG.PCW_USE_S_AXI_HP2 {0} \
    CONFIG.PCW_USE_S_AXI_HP3 {0} \
@@ -1034,7 +1034,7 @@ Flash#Quad SPI Flash#GPIO#Quad SPI Flash#SD 1#SD 1#SD 1#SD 1#SD 1#SD 1#SD\
   # Create instance: ps7_0_axi_periph, and set properties
   set ps7_0_axi_periph [ create_bd_cell -type ip -vlnv xilinx.com:ip:axi_interconnect:2.1 ps7_0_axi_periph ]
   set_property -dict [ list \
-   CONFIG.NUM_MI {1} \
+   CONFIG.NUM_MI {2} \
  ] $ps7_0_axi_periph
 
   # Create instance: rst_ps7_0_100M, and set properties
@@ -1054,10 +1054,77 @@ Flash#Quad SPI Flash#GPIO#Quad SPI Flash#SD 1#SD 1#SD 1#SD 1#SD 1#SD 1#SD\
   connect_bd_net -net rst_ps7_0_100M_peripheral_aresetn [get_bd_pins ps7_0_axi_periph/ARESETN] [get_bd_pins ps7_0_axi_periph/M00_ARESETN] [get_bd_pins ps7_0_axi_periph/S00_ARESETN] [get_bd_pins rst_ps7_0_100M/peripheral_aresetn] 
 
   # Create address segments
-  assign_bd_address -offset 0x50000000 -range 0x00010000 -target_address_space [get_bd_addr_spaces processing_system7_0/Data] [get_bd_addr_segs M00_AXI/Reg] -force
+  assign_bd_address -offset 0x40000000 -range 0x00010000 -target_address_space [get_bd_addr_spaces processing_system7_0/Data] [get_bd_addr_segs M00_AXI/Reg] -force
 
 
-  # Restore current instance
+# ------------------------------------------------------------------
+   # aurora DMA 通路 (PL->PS 假数据 S2MM 写 DDR; MM2S 回环预留)
+   #   - 数据口 M_AXI_SG / M_AXI_MM2S / M_AXI_S2MM -> S_AXI_HP0 (64bit 高带宽)
+   #   - 控制口 s_axi_lite 挂 GP0 互联 M01 (0x50000000)
+   #   - 流接口: S_AXIS_S2MM(外部Slave, 顶层假数据源喂入) / M_AXIS_MM2S(外部Master, 回环/丢弃)
+   # ------------------------------------------------------------------
+   # Create instance: axi_dma_0
+   set axi_dma_0 [ create_bd_cell -type ip -vlnv xilinx.com:ip:axi_dma:7.1 axi_dma_0 ]
+   set_property -dict [ list \
+    CONFIG.c_include_mm2s {1} \
+    CONFIG.c_include_s2mm {1} \
+    CONFIG.c_include_sg {1} \
+    CONFIG.c_sg_length_width {26} \
+    CONFIG.c_addr_width {32} \
+    CONFIG.c_m_axi_mm2s_data_width {64} \
+    CONFIG.c_m_axi_s2mm_data_width {64} \
+    CONFIG.c_m_axis_mm2s_tdata_width {32} \
+    CONFIG.c_s_axis_s2mm_tdata_width {32} \
+   ] $axi_dma_0
+
+   # Create instance: hp0_axi_periph (PL DMA master -> PS S_AXI_HP0)
+   set hp0_axi_periph [ create_bd_cell -type ip -vlnv xilinx.com:ip:axi_interconnect:2.1 hp0_axi_periph ]
+   set_property -dict [ list \
+    CONFIG.NUM_MI {1} \
+    CONFIG.NUM_SI {3} \
+    CONFIG.M00_DATA_WIDTH {64} \
+    CONFIG.S00_DATA_WIDTH {64} \
+    CONFIG.S01_DATA_WIDTH {64} \
+    CONFIG.S02_DATA_WIDTH {64} \
+   ] $hp0_axi_periph
+
+   # Create AXI-Stream external ports (顶层假数据源 <-> DMA)
+   # 显式声明 32bit AXI4-Stream (DATA width 32bit, 含 TLAST) —— AXIDMA 引擎要求 TLAST,
+   # 缺省只给 8bit 且无 TLAST, 会触发校验错误 (见 TDATA_NUM_BYTES/TLAST 报错)。
+   set S_AXIS_S2MM [ create_bd_intf_port -mode Slave  -vlnv xilinx.com:interface:axis_rtl:1.0 S_AXIS_S2MM ]
+   # S_AXIS_S2MM: 显式 32bit (PROTOCOL 固定 AXI4STREAM 只读; 缺省 8bit 且无 TLAST -> 校验错)
+   set_property -dict [ list \
+    CONFIG.TDATA_NUM_BYTES {4} \
+   ] $S_AXIS_S2MM
+   # M_AXIS_MM2S: 宽度由 DMA M_AXIS_MM2S(32bit) 连接自动推出, TDATA_NUM_BYTES 只读, 无需显式设置
+   set M_AXIS_MM2S [ create_bd_intf_port -mode Master -vlnv xilinx.com:interface:axis_rtl:1.0 M_AXIS_MM2S ]
+
+   # Create DMA interface connections
+   #  控制: GP M01 -> axi_dma s_axi_lite
+   connect_bd_intf_net -intf_net ps7_0_axi_periph_M01_AXI [get_bd_intf_pins ps7_0_axi_periph/M01_AXI] [get_bd_intf_pins axi_dma_0/S_AXI_LITE]
+   #  数据: DMA(master) -> hp0 互联 -> PS S_AXI_HP0
+   connect_bd_intf_net -intf_net axi_dma_0_M_AXI_SG   [get_bd_intf_pins axi_dma_0/M_AXI_SG]   [get_bd_intf_pins hp0_axi_periph/S00_AXI]
+   connect_bd_intf_net -intf_net axi_dma_0_M_AXI_MM2S [get_bd_intf_pins axi_dma_0/M_AXI_MM2S] [get_bd_intf_pins hp0_axi_periph/S01_AXI]
+   connect_bd_intf_net -intf_net axi_dma_0_M_AXI_S2MM [get_bd_intf_pins axi_dma_0/M_AXI_S2MM] [get_bd_intf_pins hp0_axi_periph/S02_AXI]
+   connect_bd_intf_net -intf_net hp0_axi_periph_M00_AXI [get_bd_intf_pins hp0_axi_periph/M00_AXI] [get_bd_intf_pins processing_system7_0/S_AXI_HP0]
+   #  流: 顶层假数据源 -> S2MM ; MM2S -> 外部(回环/丢弃)
+   connect_bd_intf_net -intf_net dma_s2mm_stream [get_bd_intf_ports S_AXIS_S2MM] [get_bd_intf_pins axi_dma_0/S_AXIS_S2MM]
+   connect_bd_intf_net -intf_net dma_mm2s_stream [get_bd_intf_pins axi_dma_0/M_AXIS_MM2S] [get_bd_intf_ports M_AXIS_MM2S]
+
+   # 时钟/复位 (并入既有 FCLK_CLK0 / peripheral_aresetn 网络)
+   connect_bd_net -net processing_system7_0_FCLK_CLK0 [get_bd_ports FCLK_CLK0] [get_bd_pins processing_system7_0/S_AXI_HP0_ACLK] [get_bd_pins hp0_axi_periph/ACLK] [get_bd_pins hp0_axi_periph/M00_ACLK] [get_bd_pins hp0_axi_periph/S00_ACLK] [get_bd_pins hp0_axi_periph/S01_ACLK] [get_bd_pins hp0_axi_periph/S02_ACLK] [get_bd_pins ps7_0_axi_periph/M01_ACLK] [get_bd_pins axi_dma_0/s_axi_lite_aclk] [get_bd_pins axi_dma_0/m_axi_sg_aclk] [get_bd_pins axi_dma_0/m_axi_mm2s_aclk] [get_bd_pins axi_dma_0/m_axi_s2mm_aclk]
+   connect_bd_net -net rst_ps7_0_100M_peripheral_aresetn [get_bd_pins hp0_axi_periph/ARESETN] [get_bd_pins hp0_axi_periph/M00_ARESETN] [get_bd_pins hp0_axi_periph/S00_ARESETN] [get_bd_pins hp0_axi_periph/S01_ARESETN] [get_bd_pins hp0_axi_periph/S02_ARESETN] [get_bd_pins ps7_0_axi_periph/M01_ARESETN] [get_bd_pins axi_dma_0/s_axi_lite_aresetn] [get_bd_pins axi_dma_0/m_axi_sg_aresetn] [get_bd_pins axi_dma_0/m_axi_mm2s_aresetn] [get_bd_pins axi_dma_0/m_axi_s2mm_aresetn]
+
+   # 地址段: DMA 控制寄存器 + HP 数据空间(DDR)
+   assign_bd_address -offset 0x50000000 -range 0x00010000 -target_address_space [get_bd_addr_spaces processing_system7_0/Data] [get_bd_addr_segs axi_dma_0/S_AXI_LITE/Reg] -force
+   assign_bd_address -offset 0x00000000 -range 0x40000000 -target_address_space [get_bd_addr_spaces axi_dma_0/Data_SG]   [get_bd_addr_segs processing_system7_0/S_AXI_HP0/HP0_DDR_LOWOCM] -force
+   assign_bd_address -offset 0x00000000 -range 0x40000000 -target_address_space [get_bd_addr_spaces axi_dma_0/Data_MM2S] [get_bd_addr_segs processing_system7_0/S_AXI_HP0/HP0_DDR_LOWOCM] -force
+   assign_bd_address -offset 0x00000000 -range 0x40000000 -target_address_space [get_bd_addr_spaces axi_dma_0/Data_S2MM] [get_bd_addr_segs processing_system7_0/S_AXI_HP0/HP0_DDR_LOWOCM] -force
+
+   # 在所有时钟网络连接完成后再设置外部 AXI 接口与 FCLK_CLK0 的关联, 消除 [BD 41-2559]
+   set_property ASSOCIATED_BUSIF {M00_AXI S_AXIS_S2MM M_AXIS_MM2S} [get_bd_ports FCLK_CLK0]
+
+   # Restore current instance
   current_bd_instance $oldCurInst
 
   validate_bd_design
