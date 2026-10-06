@@ -10,15 +10,14 @@
  *        │  P-BUS(读写分开, 按 AXI 先后): p_wvalid/p_waddr/p_wdata/p_wstrb,
  *        │                                p_rvalid/p_raddr, 单根 p_rdata 读回
  *        ├─── aurora_system_regs (生成: scratch/version/ctrl.ctrl[0] 软复位自动清)
- *        ├─── aurora_led_regs    (生成: value/ctrl/status, 业务在 aurora_led)
- *        │         │ value/ctrl            status
- *        │         ▼
- *        │   aurora_led   (管脚逻辑: value+en -> led_o, 回填 status)
- *        └─ aurora_dma_regs (生成: ctrl/len/status, 业务在 aurora_dma_src)
- *                 │  ctrl/len      status
- *                 ▼
- *        aurora_dma_src  (假数据源 S2MM: 发 {5AA5,idx} 帧 -> BD S_AXIS_S2MM -> AXI DMA -> S_AXI_HP0 写 DDR)
- *        aurora_dma_sink (接收 BD M_AXIS_MM2S, 丢弃/回环预留)
+ *        ├─── aurora_led_subsys  (LED 子系统壳：寄存器+管脚逻辑 收敛为一块)
+ *        │         │ value/ctrl   status      │ led_o / led_off
+ *        │         ▼                          │
+ *        │   内部: aurora_led_regs + aurora_led(管脚逻辑)
+ *        └─ aurora_dma_subsys  (DMA 子系统壳：寄存器+假数据源+MM2S 接收收敛为一块)
+ *                 │  ctrl/len   status     │ S_AXIS_S2MM -> BD AXI DMA -> S_AXI_HP0 写 DDR
+ *                 ▼                        │ 读回 M_AXIS_MM2S（丢弃/回环预留）
+ *           内部: aurora_dma_regs + aurora_dma_src(假源) + aurora_dma_sink(接收)
  *
  * 时钟/复位：AXI 与 PS 同为 FCLK_CLK0(100MHz)，复位 FCLK_RESET0_N(低有效)。
  * sysclk_p / rstn_i 保留端口供约束文件引用，本版不用。
@@ -90,19 +89,14 @@ module aurora_top (
     wire        sys_o_rvalid, led_o_rvalid, adc_o_rvalid;
     wire [31:0] sys_o_rdata,  led_o_rdata,  adc_o_rdata;
 
-    // ---- LED 通路：led_regs <-> aurora_led ----
-    wire [31:0] led_o_value, led_o_ctrl, led_i_status;
-    wire [3:0]  led_out, led_status_net;
-
-    // ---- DMA 通路：dma_regs <-> 假数据源；S2MM(PL->PS 写 DDR) / MM2S(读回丢弃·回环预留) ----
+    // ---- DMA 通路：壳子对外只留 P-BUS 从口 + 流网；内部 regs/src/sink 收敛在 aurora_dma_subsys ----
     wire        dma_o_rvalid;
     wire [31:0] dma_o_rdata;
-    wire [31:0] dma_o_ctrl, dma_o_len, dma_i_status, dma_src_status;
-    wire        dma_busy, dma_done;
-    wire [7:0]  dma_frames;
-    // AXI-Stream 数据网 (顶层假数据源 <-> wrapper BD)
-    wire [31:0] s2mm_tdata, mm2s_tdata;
+    // AXI-Stream 数据网 (aurora_dma_subsys <-> wrapper BD)
+    wire [63:0] s2mm_tdata;
+    wire [31:0] mm2s_tdata;
     wire        s2mm_tvalid, s2mm_tready, s2mm_tlast;
+    wire [7:0]  s2mm_tkeep;
     wire        mm2s_tvalid, mm2s_tready, mm2s_tlast;
 
     // ------------------------------------------------------------------
@@ -154,6 +148,7 @@ module aurora_top (
         .S_AXIS_S2MM_tdata  (s2mm_tdata),
         .S_AXIS_S2MM_tvalid (s2mm_tvalid),
         .S_AXIS_S2MM_tready (s2mm_tready),
+        .S_AXIS_S2MM_tkeep  (s2mm_tkeep),
         .S_AXIS_S2MM_tlast  (s2mm_tlast),
         .M_AXIS_MM2S_tdata  (mm2s_tdata),
         .M_AXIS_MM2S_tvalid (mm2s_tvalid),
@@ -213,17 +208,6 @@ module aurora_top (
         .o_ctrl   ()
     );
 
-    aurora_led_regs u_ledregs (
-        .aclk    (fclk_clk0),
-        .aresetn (fclk_reset0_n),
-        .p_wvalid(p_wvalid), .p_waddr(p_waddr), .p_wdata(p_wdata), .p_wstrb(p_wstrb),
-        .p_rvalid(p_rvalid), .p_raddr(p_raddr),
-        .o_rvalid(led_o_rvalid), .o_rdata(led_o_rdata),
-        .o_value (led_o_value),
-        .o_ctrl  (led_o_ctrl),
-        .i_status(led_i_status)
-    );
-
     aurora_adc_regs u_adcregs (
         .aclk    (fclk_clk0),
         .aresetn (fclk_reset0_n),
@@ -233,62 +217,47 @@ module aurora_top (
     );
 
     // ------------------------------------------------------------------
-    // LED 外设管脚逻辑（业务），status 回填 led_regs
+    // LED 子系统: 寄存器 + 管脚逻辑 收敛成一个壳（同 dma 风格）
     // ------------------------------------------------------------------
-    assign led_i_status = {27'd0, led_o_ctrl[0], led_status_net[3:0]};
-
-    aurora_led u_ledio (
-        .led_value_i   (led_o_value[3:0]),
-        .led_en_i      (led_o_ctrl[0]),
-        .led_o         (led_out),
-        .led_status_o  (led_status_net)
+    aurora_led_subsys u_led (
+        .aclk        (fclk_clk0),
+        .aresetn     (fclk_reset0_n),
+        .p_wvalid    (p_wvalid),
+        .p_waddr     (p_waddr),
+        .p_wdata     (p_wdata),
+        .p_wstrb     (p_wstrb),
+        .p_rvalid    (p_rvalid),
+        .p_raddr     (p_raddr),
+        .o_rvalid    (led_o_rvalid),
+        .o_rdata     (led_o_rdata),
+        .led_o       (led_o),
+        .led_off     (led_off)
     );
-    assign led_o = led_out;
 
-    assign led_off = 3'b000;
-
-// ------------------------------------------------------------------
-    // DMA 通路: dma 控制寄存器 + 假数据源(S2MM->写 DDR) + MM2S 接收(丢弃·回环预留)
     // ------------------------------------------------------------------
-    aurora_dma_regs u_dmaregs (
-        .aclk    (fclk_clk0),
-        .aresetn (fclk_reset0_n),
-        .p_wvalid(p_wvalid), .p_waddr(p_waddr), .p_wdata(p_wdata), .p_wstrb(p_wstrb),
-        .p_rvalid(p_rvalid), .p_raddr(p_raddr),
-        .o_rvalid(dma_o_rvalid), .o_rdata(dma_o_rdata),
-        .o_ctrl  (dma_o_ctrl),
-        .o_len   (dma_o_len),
-        .i_status(dma_i_status)
-    );
-
-    // 假数据源 -> dma 状态回填: [15:8]帧数 [1]本帧完成(一拍) [0]busy
-    assign dma_src_status = {23'd0, dma_frames, dma_done, dma_busy};
-    assign dma_i_status   = dma_src_status;
-
-    aurora_dma_src u_dmasrc (
-        .aclk     (fclk_clk0),
-        .aresetn  (fclk_reset0_n),
-        .run_i    (dma_o_ctrl[0]),
-        .len_i    (dma_o_len[15:0]),
-        .busy_o   (dma_busy),
-        .done_o   (dma_done),
-        .frames_o (dma_frames),
-        .m_tvalid (s2mm_tvalid),
-        .m_tready (s2mm_tready),
-        .m_tdata  (s2mm_tdata),
-        .m_tkeep  (),
-        .m_tlast  (s2mm_tlast)
-    );
-
-    aurora_dma_sink u_dmasink (
-        .aclk     (fclk_clk0),
-        .aresetn  (fclk_reset0_n),
-        .s_tdata  (mm2s_tdata),
-        .s_tvalid (mm2s_tvalid),
-        .s_tready (mm2s_tready),
-        .s_tlast  (mm2s_tlast),
-        .word_cnt_o (),
-        .frame_cnt_o()
+    // DMA 子系统: 寄存器 + 假数据源(S2MM->写 DDR) + MM2S 接收，收敛成一个壳
+    // 后续调 DMA 时序/状态/RTL 只改 aurora_dma_subsys.v，不必再动本顶层
+    // ------------------------------------------------------------------
+    aurora_dma_subsys u_dma (
+        .aclk        (fclk_clk0),
+        .aresetn     (fclk_reset0_n),
+        .p_wvalid    (p_wvalid),
+        .p_waddr     (p_waddr),
+        .p_wdata     (p_wdata),
+        .p_wstrb     (p_wstrb),
+        .p_rvalid    (p_rvalid),
+        .p_raddr     (p_raddr),
+        .o_rvalid    (dma_o_rvalid),
+        .o_rdata     (dma_o_rdata),
+        .s2mm_tdata  (s2mm_tdata),
+        .s2mm_tvalid (s2mm_tvalid),
+        .s2mm_tready (s2mm_tready),
+        .s2mm_tkeep  (s2mm_tkeep),
+        .s2mm_tlast  (s2mm_tlast),
+        .mm2s_tdata  (mm2s_tdata),
+        .mm2s_tvalid (mm2s_tvalid),
+        .mm2s_tready (mm2s_tready),
+        .mm2s_tlast  (mm2s_tlast)
     );
 
 endmodule

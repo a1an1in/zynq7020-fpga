@@ -44,13 +44,25 @@ if {[llength $hw_target] == 0} {
 }
 open_hw_target $hw_target
 
-# Select the first FPGA (usually device 0 for Zynq)
-set hw_dev [lindex [get_hw_devices] 0]
-current_hw_device $hw_dev
-refresh_hw_device -update_hw_probes false $hw_dev
+# Select the PL (FPGA fabric) device, NOT the ARM DAP (arm_dap_0).
+# Zynq-7000 JTAG has two hw_devices: arm_dap_0 (debug) and xc7z020_1 (PL).
+# ILA/debug hub lives on the PL device; arm_dap_0 has no PROGRAM_STATE and is not programmable.
+set pl_dev ""
+foreach d [get_hw_devices] {
+    set nm [string tolower [get_property NAME $d]]
+    if {[string match "arm_dap*" $nm]} { continue }
+    if {$pl_dev eq ""} { set pl_dev $d }
+}
+if {$pl_dev eq ""} {
+    # fallback: first device under the assumption it is the only one
+    set pl_dev [lindex [get_hw_devices] 0]
+}
+puts "PL_DEVICE: $pl_dev"
+current_hw_device $pl_dev
+refresh_hw_device $pl_dev
 
-set_property PROGRAM.FILE $bit_file $hw_dev
-program_hw_devices $hw_dev
+set_property PROGRAM.FILE $bit_file $pl_dev
+program_hw_devices $pl_dev
 
 puts "=================================================================="
 puts "Programming complete: ${bit_file}"

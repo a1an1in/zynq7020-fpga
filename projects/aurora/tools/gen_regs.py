@@ -33,10 +33,24 @@ def entry_int(hexstr, what):
         raise ValueError("%s: 无法解析的十六进制值 '%s'" % (what, hexstr))
 
 
+def version_u32(s):
+    """把 JSON 的 VERSION 解析成 32bit。点分格式 M.m.p，或兼容旧 0x 前缀。编码: bit[31:24]主, bit[23:16]次, bit[15:8]修订, bit[7:0]保留。"""
+    s = s.strip()
+    if s.lower().startswith("0x"):
+        return entry_int(s, "version")
+    parts = [int(x) for x in s.split(".")]
+    if not (1 <= len(parts) <= 3):
+        raise ValueError("version: 点分格式应为 M.m.p，收到: %s" % s)
+    parts = parts + [0] * (3 - len(parts))
+    for x in parts:
+        if not 0 <= x <= 255:
+            raise ValueError("version: 每段需在 0..255，收到: %s" % s)
+    return (parts[0] << 24) | (parts[1] << 16) | (parts[2] << 8)
+
 def gen(data):
     base = entry_int(data["base"], "base")
     win = entry_int(data["size"], "size")
-    version = entry_int(data["version"], "version")
+    version = version_u32(data["version"])
     name = data["name"].lower()
     blocks_info = []
     for bname, blk in data["blocks"].items():
@@ -213,9 +227,11 @@ def write_block(blk, version):
         L.append("            `AURORA_%s_%s: rd_val = i_%s;"
                  % (U, r["name"].upper(), r["name"]))
     for r in ros_cst:
-        val = version if r["name"] == "version" else 0
-        L.append("            `AURORA_%s_%s: rd_val = 32'h%08X; // 固定常数"
-                 % (U, r["name"].upper(), val))
+        # version 只读寄存器：直接引用 .vh 里的 `AURORA_VERSION 宏(单一真源 = json version)，
+        # 避免 .v 内再写一份字面量造成双源(脱钩根因)；其余固定常数仍为 0。
+        rhs = "`AURORA_VERSION" if r["name"] == "version" else "32'h00000000"
+        L.append("            `AURORA_%s_%s: rd_val = %s; // 取 .vh 宏(真源) / 固定常数"
+                 % (U, r["name"].upper(), rhs))
     L.append("            default: rd_val = 32'd0;")
     L.append("        endcase")
     L.append("    end")

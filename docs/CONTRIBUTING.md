@@ -88,6 +88,8 @@ python scripts/fpga.py sim   --top <工程名>
 python scripts/fpga.py program --top <工程名>
 # 清理
 python scripts/fpga.py clean
+# 把 XSA 认领到 ARM 仓库 docker/archives/system.xsa（供 petalinux-config --get-hw-description 导入）
+python scripts/fpga.py ship-xsa --top <工程名>
 ```
 
 ## 7. 切换平台清单（从 Windows → Linux 等）

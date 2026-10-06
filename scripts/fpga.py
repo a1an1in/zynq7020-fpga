@@ -10,6 +10,7 @@ Usage (same from Windows cmd/PowerShell and Linux):
     python scripts/fpga.py clean                   # remove build/ artifacts
     python scripts/fpga.py debug   --top <proj>    # runtime-reload PL (fpga_manager); NOT persistent, reverts on reboot
     python scripts/fpga.py load    --top <proj>    # PERSIST bit: replace SD boot-partition system.bit so u-boot loads it on reboot
+    python scripts/fpga.py ship-xsa --top <proj>   # stage build/<proj>.xsa -> ARM docker/archives/system.xsa (hw source for petalinux-config --get-hw-description)
 
 Notes:
     - No shell dependence; safe and cross-platform.
@@ -18,6 +19,7 @@ Notes:
 """
 import argparse
 import glob
+import hashlib
 import os
 import shutil
 import subprocess
@@ -106,7 +108,38 @@ def base_opts():
     return "-mode batch -nolog -nojournal"
 
 
+def _bump_version(top):
+    """One-key auto-increment of the RTL/FE build version before synthesis.
+
+    If projects/<top>/tools/bump_version.py exists, run it with --gen so the
+    version number baked into the bitstream (SYSTEM.VERSION register) is bumped
+    by one on every `fpga.py build`.  Skips silently for projects that have no
+    such tool.  Returns None on success; a brief warning string if the bump
+    failed (the build still proceeds, version stays unchanged).
+    """
+    if not top:
+        return None
+    bump = os.path.join(ROOT, "projects", top, "tools", "bump_version.py")
+    if not os.path.isfile(bump):
+        return None
+    try:
+        r = subprocess.run([sys.executable, bump, "--gen"],
+                           cwd=os.path.dirname(bump), capture_output=True, timeout=60)
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return "could not run %s" % bump
+    if r.returncode != 0:
+        return "bump_version failed (rc=%d): %s" % (
+            r.returncode, r.stdout.decode(errors="replace").strip()[-400:])
+    ver = next((ln for ln in r.stdout.decode(errors="replace").splitlines()
+                if ln.lower().startswith("new version")), None)
+    print(("[ver] " + ver) if ver else "[ver] version bumped")
+    return None
+
+
 def cmd_build(args):
+    warn = _bump_version(args.top)
+    if warn:
+        print(f"[warn] {warn}")
     script = os.path.join(SCRIPTS, "create_project.tcl")
     opts = ["--top", args.top] if args.top else []
     full = f'{find_vivado()} {base_opts()} -source "{script}" -tclargs ' + " ".join(opts)
@@ -132,6 +165,46 @@ def cmd_build(args):
     print(sep)
     sys.exit(0 if passed else 1)
 
+def _md5(path):
+    """Return the hex md5 of a file (streamed; works for large XSA files)."""
+    h = hashlib.md5()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 16), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def cmd_ship_xsa(args):
+    """Copy the built XSA (build/<proj>.xsa) into the ARM PetaLinux project's
+    docker/archives/ as system.xsa. That is the PetaLinux hw source you later
+    pass to `petalinux-config --get-hw-description /work/docker/archives`."""
+    proj = args.top or "proj1_template"
+    src = os.path.join(BUILD, f"{proj}.xsa")
+    if not os.path.isfile(src):
+        raise SystemExit(
+            f"[error] XSA not found: {src}\n"
+            f"        Run 'python scripts/fpga.py build --top {proj}' first."
+        )
+
+    # ARM repo is the sibling of the fpga repo by default; override with ARM_REPO.
+    arm_repo = os.environ.get("ARM_REPO") or os.path.join(
+        os.path.dirname(ROOT), "zynq7020-arm")
+    dest_dir = os.path.join(arm_repo, "docker", "archives")
+    dest = os.path.join(dest_dir, "system.xsa")
+    os.makedirs(dest_dir, exist_ok=True)
+    shutil.copy2(src, dest)
+
+    src_cksum = _md5(src)
+    dst_cksum = _md5(dest)
+    ok = src_cksum == dst_cksum
+    print("=" * 60)
+    print("  XSA staged for ARM PetaLinux:")
+    print(f"    from: {src}")
+    print(f"    to  : {dest}")
+    print(f"    size: {os.path.getsize(dest)} bytes")
+    print(f"    md5 : {dst_cksum}  (copy {'OK' if ok else 'MISMATCH!'})")
+    print("=" * 60)
+    sys.exit(0 if ok else 1)
 
 def cmd_program(args):
     script = os.path.join(SCRIPTS, "program_fpga.tcl")
@@ -393,6 +466,10 @@ def main():
 
     pc = sub.add_parser("clean", help="clean build/ artifacts")
     pc.set_defaults(func=cmd_clean)
+
+    psx = sub.add_parser("ship-xsa", help="stage build/<proj>.xsa into the ARM PetaLinux docker/archives/ as system.xsa (hw source for petalinux-config --get-hw-description)")
+    psx.add_argument("--top", help="project folder name under projects/ (default proj1_template); XSA is taken from build/<top>.xsa")
+    psx.set_defaults(func=cmd_ship_xsa)
 
     pd = sub.add_parser("debug", help="runtime-reload PL for DEBUG/testing: bit->bin, fpga_manager (NOT persistent; reverts on reboot)")
     pd.add_argument("--top", help="project folder name under projects/")

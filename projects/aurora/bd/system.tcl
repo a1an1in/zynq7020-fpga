@@ -1009,7 +1009,7 @@ Flash#Quad SPI Flash#GPIO#Quad SPI Flash#SD 1#SD 1#SD 1#SD 1#SD 1#SD 1#SD\
    CONFIG.PCW_USE_DMA3 {0} \
    CONFIG.PCW_USE_EXPANDED_IOP {0} \
    CONFIG.PCW_USE_EXPANDED_PS_SLCR_REGISTERS {0} \
-   CONFIG.PCW_USE_FABRIC_INTERRUPT {0} \
+   CONFIG.PCW_USE_FABRIC_INTERRUPT {1} \
    CONFIG.PCW_USE_HIGH_OCM {0} \
    CONFIG.PCW_USE_M_AXI_GP0 {1} \
    CONFIG.PCW_USE_M_AXI_GP1 {0} \
@@ -1068,7 +1068,7 @@ Flash#Quad SPI Flash#GPIO#Quad SPI Flash#SD 1#SD 1#SD 1#SD 1#SD 1#SD 1#SD\
    set_property -dict [ list \
     CONFIG.c_include_mm2s {1} \
     CONFIG.c_include_s2mm {1} \
-    CONFIG.c_include_sg {1} \
+    CONFIG.c_include_sg {0} \
     CONFIG.c_sg_length_width {26} \
     CONFIG.c_addr_width {32} \
     CONFIG.c_m_axi_mm2s_data_width {64} \
@@ -1103,21 +1103,32 @@ Flash#Quad SPI Flash#GPIO#Quad SPI Flash#SD 1#SD 1#SD 1#SD 1#SD 1#SD 1#SD\
    #  控制: GP M01 -> axi_dma s_axi_lite
    connect_bd_intf_net -intf_net ps7_0_axi_periph_M01_AXI [get_bd_intf_pins ps7_0_axi_periph/M01_AXI] [get_bd_intf_pins axi_dma_0/S_AXI_LITE]
    #  数据: DMA(master) -> hp0 互联 -> PS S_AXI_HP0
-   connect_bd_intf_net -intf_net axi_dma_0_M_AXI_SG   [get_bd_intf_pins axi_dma_0/M_AXI_SG]   [get_bd_intf_pins hp0_axi_periph/S00_AXI]
    connect_bd_intf_net -intf_net axi_dma_0_M_AXI_MM2S [get_bd_intf_pins axi_dma_0/M_AXI_MM2S] [get_bd_intf_pins hp0_axi_periph/S01_AXI]
+   # [simple, c_include_sg=0] M_AXI_SG 接口已移除; 不再占用 hp0_axi_periph/S00_AXI (留空)
    connect_bd_intf_net -intf_net axi_dma_0_M_AXI_S2MM [get_bd_intf_pins axi_dma_0/M_AXI_S2MM] [get_bd_intf_pins hp0_axi_periph/S02_AXI]
    connect_bd_intf_net -intf_net hp0_axi_periph_M00_AXI [get_bd_intf_pins hp0_axi_periph/M00_AXI] [get_bd_intf_pins processing_system7_0/S_AXI_HP0]
    #  流: 顶层假数据源 -> S2MM ; MM2S -> 外部(回环/丢弃)
    connect_bd_intf_net -intf_net dma_s2mm_stream [get_bd_intf_ports S_AXIS_S2MM] [get_bd_intf_pins axi_dma_0/S_AXIS_S2MM]
    connect_bd_intf_net -intf_net dma_mm2s_stream [get_bd_intf_pins axi_dma_0/M_AXIS_MM2S] [get_bd_intf_ports M_AXIS_MM2S]
+# 中断: axi_dma mm2s/s2mm 两路 1bit OR -> PS IRQ_F2P[0] (Zynq-7000 processing_system7 的 fabric 中断输入端口名是 IRQ_F2P)
+   # NOTE: IRQ_F2P 是 Zynq-7000 PS7 的中断输入端口; pl_ps_irq0_f2p 是 UltraScale+/Versal 的端口名, 在 Zynq-7000 上不存在,
+   #       此前把 OR 输出连到 pl_ps_irq0_f2p 导致中断根本没接进 PS (hwh 里 IRQ_F2P 端口无连接)。
+   #       xlconcat 的 dout=端口数(2bit), 落不进 1bit 的 IRQ_F2P --> 故用 OR 门(util_vector_logic)把两路并入一根线。
+   set dma_intr_or [ create_bd_cell -type ip -vlnv xilinx.com:ip:util_vector_logic:2.0 dma_intr_or ]
+   set_property -dict [ list \
+    CONFIG.C_SIZE {1} \
+    CONFIG.C_OPERATION {or} \
+   ] $dma_intr_or
+   connect_bd_net -net axi_dma_mm2s_intr [get_bd_pins axi_dma_0/mm2s_introut] [get_bd_pins dma_intr_or/Op1]
+   connect_bd_net -net axi_dma_s2mm_intr [get_bd_pins axi_dma_0/s2mm_introut] [get_bd_pins dma_intr_or/Op2]
+   connect_bd_net -net ps_f2p_irq0 [get_bd_pins dma_intr_or/Res] [get_bd_pins processing_system7_0/IRQ_F2P]
 
    # 时钟/复位 (并入既有 FCLK_CLK0 / peripheral_aresetn 网络)
-   connect_bd_net -net processing_system7_0_FCLK_CLK0 [get_bd_ports FCLK_CLK0] [get_bd_pins processing_system7_0/S_AXI_HP0_ACLK] [get_bd_pins hp0_axi_periph/ACLK] [get_bd_pins hp0_axi_periph/M00_ACLK] [get_bd_pins hp0_axi_periph/S00_ACLK] [get_bd_pins hp0_axi_periph/S01_ACLK] [get_bd_pins hp0_axi_periph/S02_ACLK] [get_bd_pins ps7_0_axi_periph/M01_ACLK] [get_bd_pins axi_dma_0/s_axi_lite_aclk] [get_bd_pins axi_dma_0/m_axi_sg_aclk] [get_bd_pins axi_dma_0/m_axi_mm2s_aclk] [get_bd_pins axi_dma_0/m_axi_s2mm_aclk]
-   connect_bd_net -net rst_ps7_0_100M_peripheral_aresetn [get_bd_pins hp0_axi_periph/ARESETN] [get_bd_pins hp0_axi_periph/M00_ARESETN] [get_bd_pins hp0_axi_periph/S00_ARESETN] [get_bd_pins hp0_axi_periph/S01_ARESETN] [get_bd_pins hp0_axi_periph/S02_ARESETN] [get_bd_pins ps7_0_axi_periph/M01_ARESETN] [get_bd_pins axi_dma_0/s_axi_lite_aresetn] [get_bd_pins axi_dma_0/m_axi_sg_aresetn] [get_bd_pins axi_dma_0/m_axi_mm2s_aresetn] [get_bd_pins axi_dma_0/m_axi_s2mm_aresetn]
+   connect_bd_net -net processing_system7_0_FCLK_CLK0 [get_bd_ports FCLK_CLK0] [get_bd_pins processing_system7_0/S_AXI_HP0_ACLK] [get_bd_pins hp0_axi_periph/ACLK] [get_bd_pins hp0_axi_periph/M00_ACLK] [get_bd_pins hp0_axi_periph/S00_ACLK] [get_bd_pins hp0_axi_periph/S01_ACLK] [get_bd_pins hp0_axi_periph/S02_ACLK] [get_bd_pins ps7_0_axi_periph/M01_ACLK] [get_bd_pins axi_dma_0/s_axi_lite_aclk] [get_bd_pins axi_dma_0/m_axi_mm2s_aclk] [get_bd_pins axi_dma_0/m_axi_s2mm_aclk]
+   connect_bd_net -net rst_ps7_0_100M_peripheral_aresetn [get_bd_pins hp0_axi_periph/ARESETN] [get_bd_pins hp0_axi_periph/M00_ARESETN] [get_bd_pins hp0_axi_periph/S00_ARESETN] [get_bd_pins hp0_axi_periph/S01_ARESETN] [get_bd_pins hp0_axi_periph/S02_ARESETN] [get_bd_pins ps7_0_axi_periph/M01_ARESETN] [get_bd_pins axi_dma_0/s_axi_lite_aresetn] [get_bd_pins axi_dma_0/m_axi_mm2s_aresetn] [get_bd_pins axi_dma_0/m_axi_s2mm_aresetn]
 
    # 地址段: DMA 控制寄存器 + HP 数据空间(DDR)
    assign_bd_address -offset 0x50000000 -range 0x00010000 -target_address_space [get_bd_addr_spaces processing_system7_0/Data] [get_bd_addr_segs axi_dma_0/S_AXI_LITE/Reg] -force
-   assign_bd_address -offset 0x00000000 -range 0x40000000 -target_address_space [get_bd_addr_spaces axi_dma_0/Data_SG]   [get_bd_addr_segs processing_system7_0/S_AXI_HP0/HP0_DDR_LOWOCM] -force
    assign_bd_address -offset 0x00000000 -range 0x40000000 -target_address_space [get_bd_addr_spaces axi_dma_0/Data_MM2S] [get_bd_addr_segs processing_system7_0/S_AXI_HP0/HP0_DDR_LOWOCM] -force
    assign_bd_address -offset 0x00000000 -range 0x40000000 -target_address_space [get_bd_addr_spaces axi_dma_0/Data_S2MM] [get_bd_addr_segs processing_system7_0/S_AXI_HP0/HP0_DDR_LOWOCM] -force
 
@@ -1126,6 +1137,54 @@ Flash#Quad SPI Flash#GPIO#Quad SPI Flash#SD 1#SD 1#SD 1#SD 1#SD 1#SD 1#SD\
 
    # Restore current instance
   current_bd_instance $oldCurInst
+
+  # ==================================================================
+  # ILA 抓取面 - 分工两个 debug 核, 一次命中"为何无完成中断"
+  #
+  # A) system_ila (SLOT_0_AXI / SLOT_1_AXI, 监控 DMA AXI 接口, 自动进 debug hub)
+  #    Slot0 = M_AXI_S2MM 写 DDR 完整握手 (aw/w/b, 含 BRESP)
+  #            -> datamover 是否写完 DDR、BRESP 是否 OKEY
+  #    Slot1 = M_AXI_SG   描述符读写回 -> datamover 产生完成前的最后一步
+  #
+  # B) ila:6.2 (Native probe, 采样与 DMA 同域 FCLK_CLK0)
+  #    probe0 = axi_dma_0/s2mm_introut      datamover 是否产生完成/错误事件
+  #    probe1 = dma_intr_or/Res             是否送到 PS IRQ_F2P[0]
+  #            (两条都追加到既有 net, 不打断原有 OR 接线)
+  #
+  #   判别: M_AXI_SG 无写回 或 M_AXI_S2MM BRESP!=OKEY -> datamover 未完成(候选a)
+  #         s2mm_introut 有脉冲、Res 无                -> 断在 OR 门前(候选b)
+  #
+  # 注意: S_AXIS_S2MM 的 tvalid/tready/tlast 是流接口内部总线信号, BD 层无独立
+  #       普通 pin 可取, 帧完整送达已由顶层假数据源 busy 拉信号间接证实, 不再重复抓。
+  # 均无需改后端流程, system_ila 的 AXI slot 与 ila:6.2 会连入 debug hub 编译进 bit。
+  # ==================================================================
+  set ila_dbg [ create_bd_cell -type ip -vlnv xilinx.com:ip:system_ila:1.1 ila_dbg ]
+  set_property -dict [list \
+   CONFIG.C_NUM_MONITOR_SLOTS {2} \
+   CONFIG.C_DATA_DEPTH {8192} \
+  ] $ila_dbg
+  # 时钟/复位: 与 DMA 共用 FCLK_CLK0 / FCLK_RESET0_N（同一采样域）
+  connect_bd_net -net processing_system7_0_FCLK_CLK0 [get_bd_pins ila_dbg/clk]
+  connect_bd_net -net processing_system7_0_FCLK_RESET0_N [get_bd_pins ila_dbg/resetn]
+  # Slot0: M_AXI_S2MM 写 DDR（并入既有 net，被动监视 + 不打断数据流）
+  connect_bd_intf_net -intf_net axi_dma_0_M_AXI_S2MM [get_bd_intf_pins axi_dma_0/M_AXI_S2MM] [get_bd_intf_pins ila_dbg/SLOT_0_AXI]
+  # Slot1: M_AXI_MM2S 描述符通道实际为 simple 模式（c_include_sg=0）— 改为监视 MM2S 读 DDR
+  connect_bd_intf_net -intf_net axi_dma_0_M_AXI_MM2S [get_bd_intf_pins axi_dma_0/M_AXI_MM2S] [get_bd_intf_pins ila_dbg/SLOT_1_AXI]
+
+  # 离散完成/送 PS 信号: ila:6.2 Native probe
+  set ila_sig [ create_bd_cell -type ip -vlnv xilinx.com:ip:ila:6.2 ila_sig ]
+  set_property -dict [ list \
+   CONFIG.C_MONITOR_TYPE {Native} \
+   CONFIG.C_DATA_DEPTH {8192} \
+   CONFIG.C_NUM_OF_PROBES {2} \
+   CONFIG.C_PROBE0_WIDTH {1} \
+   CONFIG.C_PROBE1_WIDTH {1} \
+  ] $ila_sig
+  connect_bd_net -net processing_system7_0_FCLK_CLK0 [get_bd_pins ila_sig/clk]
+  # probe0: datamover 完成/错误中断源 (追加到既有 net axi_dma_s2mm_intr)
+  connect_bd_net -net axi_dma_s2mm_intr [get_bd_pins ila_sig/probe0]
+  # probe1: 送到 IRQ_F2P[0] 的那根线 (追加到既有 net ps_f2p_irq0)
+  connect_bd_net -net ps_f2p_irq0 [get_bd_pins ila_sig/probe1]
 
   validate_bd_design
   save_bd_design

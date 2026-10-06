@@ -5,7 +5,7 @@
 
 #define AURORA_BASE        0x40000000    /* 窗内绝对基址 */
 #define AURORA_WINDOW_SIZE 0x00010000u    /* 单窗口映射尺寸 */
-#define AURORA_VERSION     0x00000001u
+#define AURORA_VERSION     0x01001A00u
 
 /*---- system ----*/
 #define AURORA_SYSTEM_BASE 0x0000u

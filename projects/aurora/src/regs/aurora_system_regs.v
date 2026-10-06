@@ -46,7 +46,7 @@ module aurora_system_regs (
         case (p_raddr)
             `AURORA_SYSTEM_SCRATCH: rd_val = r_scratch;
             `AURORA_SYSTEM_CTRL: rd_val = r_ctrl;
-            `AURORA_SYSTEM_VERSION: rd_val = 32'h00000001; // 固定常数
+            `AURORA_SYSTEM_VERSION: rd_val = `AURORA_VERSION; // 取 .vh 宏(真源) / 固定常数
             default: rd_val = 32'd0;
         endcase
     end

@@ -79,7 +79,7 @@ vvp tb.vvp                            # 期望：RESULT: 13 passed, 0 failed
 | 块   | 寄存器 | 偏址 | 属性 | 说明 |
 |------|--------|------|------|------|
 |system| SCRATCH | 0x00 | RW | 通用读写测试寄存器 |
-|system| VERSION | 0x04 | RO | = 1 |
+|system| VERSION | 0x04 | RO | 点分版本 M.m.p (当前 1.0.1, 编码 0x01000100; 每次 build 修订自动+1, 满255进位次) |
 |system| CTRL    | 0x08 | RW | bit0 软件复位脉冲（写 1 自动清） |
 |led   | VALUE   | 0x10 | RW | LED 控制值 [3:0]（默认全灭 0x0） |
 |led   | CTRL    | 0x14 | RW | bit0 使能（0 全灭 / 1 按 VALUE 点亮） |

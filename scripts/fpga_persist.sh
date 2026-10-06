@@ -1,51 +1,60 @@
 #!/bin/sh
-# fpga_persist.sh [mnt]  --  run ON THE BOARD.
-# Replace the SD boot-partition system.bit with the new bit staged at /tmp/system_new.bit,
-# so u-boot fetches THIS bit from the card on next boot (instead of the one in BOOT.BIN).
-# - backs up the previous system.bit to system.bit.bak (safe to re-run / roll back)
-# - checks uEnv.txt carries an 'fpga loadb' line (the u-boot payload) and warns if not
-# Usage: sh /tmp/fpga_persist.sh [mountpoint]   (mountpoint optional; autodetected if omitted)
+# fpga_persist.sh -- persist /tmp/system_new.bit as system.bit in the SD boot
+# partition (FAT) so that u-boot (uEnv.txt 'fatload system.bit ; fpga loadb ...')
+# loads THIS bit on next reboot. Kept intentionally POSIX/busybox-ash friendly.
+#
+# Uploaded to the board by `scripts/fpga.py load` and then invoked as:
+#     sh /tmp/fpga_persist.sh '<mnt>'        # <mnt> optional, auto-detected
+#
+# Doesn't touch BOOT.BIN; the running PL is unaffected until a reboot.
 set -u
 
-NEW=/tmp/system_new.bit
-if [ ! -f "$NEW" ]; then
-    echo "error: $NEW missing - upload the bit to the board first" >&2
-    exit 2
+SRC=/tmp/system_new.bit
+mnt="${1:-}"
+
+die() { echo "[fpga_persist:error] $*" >&2; exit 1; }
+
+# 0) sanity: the freshly uploaded bit must exist and be non-empty
+[ -f "$SRC" ] && [ -s "$SRC" ] || die "missing uploaded $SRC"
+
+# 1) locate the SD boot (FAT) partition mountpoint
+if [ -z "$mnt" ] || [ ! -d "$mnt" ]; then
+    mnt=""
+    # 1a) boot partition already mounted (e.g. automount /media/sd-*, /mnt/sd-*)?
+    while read -r _dev _mp _fs _rest; do
+        case "$_fs" in
+            vfat|msdos|fat)
+                case "$_dev" in
+                    /dev/mmcblk*p1|/dev/mmcblk*1) mnt="$_mp"; break ;;
+                esac ;;
+        esac
+    done < /proc/mounts
 fi
 
-MNT=""
-if [ -n "${1:-}" ]; then
-    MNT="$1"
-else
-    for m in /media/sd-mmcblk0p1 /media/BOOT /media/boot /run/media/sd-mmcblk0p1 /mnt; do
-        if [ -f "$m/uEnv.txt" ]; then MNT="$m"; break; fi
+# 1b) try auto-mount if not mounted (this board: boot = mmcblk*p1)
+if [ -z "$mnt" ] || [ ! -d "$mnt" ]; then
+    for d in /dev/mmcblk0p1 /dev/mmcblk1p1 /dev/mmcblk2p1; do
+        [ -b "$d" ] || continue
+        mkdir -p /mnt/fpga_persist
+        if mount "$d" /mnt/fpga_persist >/dev/null 2>&1 && [ -d /mnt/fpga_persist ]; then
+            mnt=/mnt/fpga_persist
+            break
+        fi
     done
 fi
 
-if [ -z "$MNT" ] || [ ! -f "$MNT/uEnv.txt" ]; then
-    echo "error: SD boot partition not found (need a mounted FAT partition containing uEnv.txt)" >&2
-    echo "       pass the mountpoint as an argument." >&2
-    exit 3
+[ -n "$mnt" ] && [ -d "$mnt" ] || die "cannot find SD boot mountpoint (pass --mnt <path>)"
+
+# 2) backup once, then atomically replace system.bit
+dst="$mnt/system.bit"
+if [ -f "$dst" ] && [ ! -e "$dst.bak" ]; then
+    cp -f "$dst" "$dst.bak" 2>/dev/null || true
+    echo "[fpga_persist] backup: $dst -> $dst.bak"
 fi
 
-if grep -q 'fpga loadb' "$MNT/uEnv.txt"; then
-    echo "  uEnv.txt: has fpga loadb -> u-boot should load the bit from this card  OK"
-else
-    echo "  WARN: uEnv.txt lacks a 'fpga loadb' line; u-boot will NOT pick this bit up from the card"
-fi
+cp -f "$SRC" "$dst" || die "copy $SRC -> $dst failed"
+sync
 
-if [ -f "$MNT/system.bit" ]; then
-    cp -f "$MNT/system.bit" "$MNT/system.bit.bak" \
-        && echo "  backup: system.bit -> system.bit.bak"
-fi
-
-if cp -f "$NEW" "$MNT/system.bit" && sync; then
-    echo "  installed: $MNT/system.bit ($(wc -c < "$MNT/system.bit") B)"
-else
-    echo "error: failed to write $MNT/system.bit (is it read-only / full?)" >&2
-    exit 4
-fi
-
-echo "  --- boot partition (relevant files) ---"
-ls -l "$MNT" | grep -E 'system.bit|uEnv.txt|BOOT.BIN'
-exit 0
+size=$(wc -c < "$dst" 2>/dev/null || echo 0)
+echo "[fpga_persist:ok] $SRC -> $dst (${size} B)"
+echo "[fpga_persist:ok] reboot now; u-boot will 'fpga loadb' system.bit from the card"

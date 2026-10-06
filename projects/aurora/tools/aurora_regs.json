@@ -1,53 +1,125 @@
 {
   "_comment": "aurora 寄存器映射 · 单一真源 (single source of truth). 手工不可改 .vh/.h, 一律改本文件后重跑 tools/gen_regs.py。地址分块: SYSTEM/LED 实现, ADC 预留。窗内偏址为字节地址; 绝对地址 = BASE + 偏址。",
-  "name":       "aurora",
-  "base":       "0x40000000",
-  "size":       "0x10000",
-  "version":    "0x00000001",
-
+  "name": "aurora",
+  "base": "0x40000000",
+  "size": "0x10000",
+  "version": "1.0.26",
   "blocks": {
     "system": {
       "desc": "系统级寄存器块",
       "base": "0x0000",
       "size": "0x0010",
       "regs": [
-        { "name": "scratch", "offset": "0x0000", "rw":  "x", "rst": "0x00000000", "desc": "通用读写测试寄存器, 任意值" },
-        { "name": "version", "offset": "0x0004", "ro":  "x", "rst": "0x00000001", "in": false, "desc": "固件版本 (只读, 取 JSON version)" },
-        { "name": "ctrl",    "offset": "0x0008", "rw":  "x", "rst": "0x00000000", "autoclear": true, "desc": "bit0=软件复位(置1后自动清), 其余保留" }
+        {
+          "name": "scratch",
+          "offset": "0x0000",
+          "rw": "x",
+          "rst": "0x00000000",
+          "desc": "通用读写测试寄存器, 任意值"
+        },
+        {
+          "name": "version",
+          "offset": "0x0004",
+          "ro": "x",
+          "rst": "0x00000001",
+          "in": false,
+          "desc": "固件版本 (只读, 取 JSON version)"
+        },
+        {
+          "name": "ctrl",
+          "offset": "0x0008",
+          "rw": "x",
+          "rst": "0x00000000",
+          "autoclear": true,
+          "desc": "bit0=软件复位(置1后自动清), 其余保留"
+        }
       ]
     },
-
     "led": {
       "desc": "LED 控制/状态寄存器块",
       "base": "0x0010",
       "size": "0x0010",
       "regs": [
-        { "name": "value",  "offset": "0x0000", "rw": "x", "rst": "0x00000000", "desc": "LED 点亮模式与控制值 [3:0]; 位0->LED0 ... 位3->LED3 (高电平点亮) (默认全灭)" },
-        { "name": "ctrl",   "offset": "0x0004", "rw": "x", "rst": "0x00000000", "desc": "bit0=LED 使能 (0:LED 全灭; 1:按 value 点亮)" },
-        { "name": "status", "offset": "0x0008", "ro": "x", "rst": "0x00000000", "desc": "只读状态: [31:9]保留 [4]使能 [3:0]实际 LED 输出" }
+        {
+          "name": "value",
+          "offset": "0x0000",
+          "rw": "x",
+          "rst": "0x00000000",
+          "desc": "LED 点亮模式与控制值 [3:0]; 位0->LED0 ... 位3->LED3 (高电平点亮) (默认全灭)"
+        },
+        {
+          "name": "ctrl",
+          "offset": "0x0004",
+          "rw": "x",
+          "rst": "0x00000000",
+          "desc": "bit0=LED 使能 (0:LED 全灭; 1:按 value 点亮)"
+        },
+        {
+          "name": "status",
+          "offset": "0x0008",
+          "ro": "x",
+          "rst": "0x00000000",
+          "desc": "只读状态: [31:9]保留 [4]使能 [3:0]实际 LED 输出"
+        }
       ]
     },
-
     "adc": {
       "desc": "ADC 保留块 (本版未实现, 仅供地址占位与未来 XADC/ADC 接入)",
       "base": "0x0020",
       "size": "0x0010",
       "reserved": true,
       "regs": [
-        { "name": "ctrl",  "offset": "0x0000", "rw": "x", "rst": "0x00000000", "desc": "预留: 转换控制" },
-        { "name": "status","offset": "0x0004", "ro": "x", "rst": "0x00000000", "desc": "预留: 忙/就绪状态" },
-        { "name": "data",  "offset": "0x0008", "ro": "x", "rst": "0x00000000", "desc": "预留: 采样数据" }
+        {
+          "name": "ctrl",
+          "offset": "0x0000",
+          "rw": "x",
+          "rst": "0x00000000",
+          "desc": "预留: 转换控制"
+        },
+        {
+          "name": "status",
+          "offset": "0x0004",
+          "ro": "x",
+          "rst": "0x00000000",
+          "desc": "预留: 忙/就绪状态"
+        },
+        {
+          "name": "data",
+          "offset": "0x0008",
+          "ro": "x",
+          "rst": "0x00000000",
+          "desc": "预留: 采样数据"
+        }
       ]
     },
-
     "dma": {
       "desc": "DMA 假数据源控制/状态 (PL->PS S2MM 假数据, MM2S 回环预留)",
       "base": "0x0030",
       "size": "0x0010",
       "regs": [
-        { "name": "ctrl",  "offset": "0x0000", "rw": "x", "rst": "0x00000000", "autoclear": true, "desc": "bit0=RUN(写1启动假数据源发一帧, 自动清) 其余保留" },
-        { "name": "len",   "offset": "0x0004", "rw": "x", "rst": "0x00000400", "desc": "每帧字数(32bit 字, 默认1024); 与 PS 侧 DMA BTT(=len*4) 保持一致" },
-        { "name": "status","offset": "0x0008", "ro": "x", "in": true, "rst": "0x00000000", "desc": "[0]busy [1]帧结束(新RUN清) [15:8]已发帧数(回绕)" }
+        {
+          "name": "ctrl",
+          "offset": "0x0000",
+          "rw": "x",
+          "rst": "0x00000000",
+          "autoclear": true,
+          "desc": "bit0=RUN(写1启动假数据源发一帧, 自动清) 其余保留"
+        },
+        {
+          "name": "len",
+          "offset": "0x0004",
+          "rw": "x",
+          "rst": "0x00000400",
+          "desc": "每帧字数(32bit 字, 默认1024); 与 PS 侧 DMA BTT(=len*4) 保持一致"
+        },
+        {
+          "name": "status",
+          "offset": "0x0008",
+          "ro": "x",
+          "in": true,
+          "rst": "0x00000000",
+          "desc": "[0]busy [1]帧结束(新RUN清) [15:8]已发帧数(回绕)"
+        }
       ]
     }
   }

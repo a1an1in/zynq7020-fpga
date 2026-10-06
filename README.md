@@ -25,7 +25,7 @@ zynq7020-fpga/
 ├── README.md                 # 本文件
 ├── .gitignore                # 忽略 Vivado 中间生成物（.runs/.cache/.hw 等）
 ├── scripts/                  # 顶层公共脚本
-│   ├── fpga.py               # 跨平台统一入口（build/sim/program/clean）
+│   ├── fpga.py               # 跨平台统一入口（build/sim/program/clean/load/ship-xsa）
 │   ├── create_project.tcl    # 建工程+综合+实现+出bit+XSA（跨平台）
 │   ├── program_fpga.tcl      # 命令行烧板（跨平台）
 │   └── simulate.tcl          # 命令行仿真（跨平台）
@@ -95,6 +95,7 @@ vivado -version
 | 子命令 | 作用 | 必备参数 | 示例 | 产物 / 说明 |
 |--------|------|----------|------|-------------|
 | `build` | **编译**：建工程 → 综合 → 实现 → 生成 bit → 导出 XSA | `--top <工程名>` | `python scripts/fpga.py build --top run_led` | `build/<工程名>_prj/<工程名>.xpr`、`build/<工程名>_prj/<工程名>.runs/impl_1/<工程名>.bit`；**含 PS/BD 才导出** `build/<工程名>.xsa`，纯 PL 会提示跳过 |
+| `ship-xsa` | **认领/转交 ARM 侧**：把 build 出的 XSA 拷入 ARM 仓库归档源 `docker/archives/system.xsa`（供 `petalinux-config --get-hw-description` 导入） | `--top <工程名>`，可选 `ARM_REPO` 环境变量覆盖目标仓库 | `python scripts/fpga.py ship-xsa --top aurora` | 写到 `<ARM 仓库>/docker/archives/system.xsa`（默认取 fpga 仓库同级 `zynq7020-arm`），并打印 md5 校验 |
 | `sim` | **命令行仿真**（需先 build，并在 `projects/<工程>/tb/` 放好 testbench） | `--top <工程名>` | `python scripts/fpga.py sim --top run_led` | 终端打印仿真结果，批处理结束自动退出 |
 | `program` | **烧板**：把 bit 写入 FPGA（需先 build，且 JTAG/开发板已连接） | `--top <工程名>` | `python scripts/fpga.py program --top run_led` | 烧写 `build/<工程名>_prj/.../impl_1/<工程名>.bit` |
 | `clean` | **清理** `build/` 全部编译产物 | 无 | `python scripts/fpga.py clean` | 删除 `build/`；无此目录则提示无需清理 |
@@ -115,14 +116,19 @@ python scripts/fpga.py build --top aurora
 # 仿真验证（先 build）
 python scripts/fpga.py sim   --top run_led
 
-# jtag烧写开发板（先 build）
-python scripts/fpga.py program --top run_led
+# 下面是常用的烧写fpga的方法
+# 1.把 XSA 拷贝进 ARM 仓库归档源 docker/archives/system.xsa（供 petalinux-config --get-hw-description 导入）
+# 这样fpga.bit 直接打包进BOOT.bin
+python scripts/fpga.py ship-xsa --top aurora
 
-# 拷贝PL到Linux 文件系统里面的firmware， 重启失效（不重打包 BOOT.bin；需板上已起 Linux 且主机可 SSH）
+# 2.替换SD里面的PL，重启后还是有效（不重打包 BOOT.bin；替换sd卡上的boot）
+python scripts/fpga.py load --top aurora --ip 10.10.10.110 --user root --passwd root
+
+# 3.拷贝PL到Linux 文件系统里面的firmware， 重启失效（不重打包 BOOT.bin；需板上已起 Linux 且主机可 SSH）
 python scripts/fpga.py debug --top aurora --ip 10.10.10.110 --user root --passwd root
 
-# 替换SD里面的PL，重启后还是有效（不重打包 BOOT.bin；替换sd卡上的boot）
-python scripts/fpga.py load --top aurora --ip 10.10.10.110 --user root --passwd root
+# 4.jtag烧写开发板（先 build）
+python scripts/fpga.py program --top run_led
 
 # 全部洗掉重来
 python scripts/fpga.py clean && python scripts/fpga.py build --top run_led
@@ -138,7 +144,7 @@ python scripts/fpga.py clean && python scripts/fpga.py build --top run_led
 产物位置：
 - 工程文件：`build/<工程名>_prj/`（`<工程名>.xpr`）
 - bit 流：`build/<工程名>_prj/<工程名>.runs/impl_1/<工程名>.bit`
-- XSA（给 ARM/软件侧）：`build/<工程名>.xsa`（含 Zynq PS 的工程才有）
+- XSA（给 ARM/软件侧）：`build/<工程名>.xsa`（含 Zynq PS 的工程才有）；用 `ship-xsa` 认领到 ARM 归档源 `zynq7020-arm/docker/archives/system.xsa`
 
 > 「完全脱离界面」的边界：
 > - **纯 RTL + XDC 约束 + `.xci` IP**：100% 命令行，不需任何窗口。
